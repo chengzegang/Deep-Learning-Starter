@@ -134,6 +134,8 @@ def setup(rank, world_size, args):
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["RANK"] = str(rank)
     logger.info(f"[rank {rank}: {world_size} started")
+    args.world_size = world_size
+    args.rank = rank
     args.device = torch.device(rank)
     if rank != 0:
         args.tqdm = False
@@ -157,6 +159,8 @@ def spawn(args):
             nprocs=world_size,
         )
     else:
+        args.world_size = 1
+        args.rank = 0
         train(args)
 
 
@@ -168,20 +172,19 @@ def train(args):
 
     dataset = imagenet1k(args.data_dir)
     total_images = 1281167
-    dataset = dataset.map(partial(transform, image_size=args.image_size)).shuffle()
-    from torch.utils.data import datapipes as dp
-
-    dataset = dp.iter.IterableWrapper(dataset).sharding_filter()
-    # sampler = DistributedSampler(dataset) if args.ddp and not isinstance(dataset, IterableDataset) else None
+    dataset = (
+        dataset.filter(lambda data, idx: True if idx % args.world_size == args.rank else False, with_indices=True)
+        .map(partial(transform, image_size=args.image_size))
+        .shuffle()
+    )
     dl = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False if args.ddp or isinstance(dataset, IterableDataset) else True,
-        num_workers=args.num_workers,
+        num_workers=min(args.num_workers, dataset.n_shards),
         pin_memory=True if not args.ddp else False,
-        pin_memory_device=[args.device] if not args.ddp else [],
+        pin_memory_device=str(args.device) if not args.ddp else "",
         persistent_workers=True,
-        # sampler=sampler,
     )
     step = 0
     model_path = os.path.join(args.model_dir, args.model.lower())
