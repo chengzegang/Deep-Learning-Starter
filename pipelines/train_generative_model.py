@@ -5,6 +5,7 @@ from deep_learning_starter.models import MaskedAutoEncoder
 from deep_learning_starter.datapipes import imagenet1k
 import torch
 import os
+import math
 from torch.distributed.tensor.parallel import parallelize_module, ColwiseParallel, RowwiseParallel
 from torch.distributed.device_mesh import init_device_mesh
 import logging
@@ -86,9 +87,20 @@ def init_model(args):
             short_e = str(e)[:128]
             logger.warning(f"Failed to load model from {model_path}. Starting from scratch. {short_e}")
     model.to(memory_format=torch.channels_last)
-
+    from torch.nn.parallel importr DistributedDataParallel as DDP
+    if args.ddp:
+        ddp_model = DDP(model, parameter_as_bucket=True, static_graph=True)
     tp_mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
-    model = parallelize_module(model, tp_mesh, ColwiseParallel())
+    
+    def build_parrellel_plan(model):
+        plan = {}
+        for name, mod in model.named_modules():
+            if isinstance(mod, (nn.Linear, nn.Embedding)):
+                plan[name] = ColwiseParallel()
+        return plan
+    
+    pplan = build_parrellel_plan(model)
+    model = parallelize_module(model, tp_mesh, pplan)
     return model
 
 
@@ -119,6 +131,12 @@ def setup(rank, world_size, args):
     os.environ["MASTER_PORT"] = "12355"
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["RANK"] = str(rank)
+    logger.info(f'[rank {rank}: {world_size} started')
+    args.device = torch.device(rank)
+    if rank != 0:
+        args.tqdm = False
+        args.save_interval = math.inf
+        args.log_interval = math.inf
     train(args)
 
 
@@ -136,6 +154,8 @@ def spawn(args):
             ),
             nprocs=world_size,
         )
+    else:
+        train(args)
 
 
 def train(args):
@@ -146,24 +166,26 @@ def train(args):
     dataset = imagenet1k(args.data_dir)
     total_images = 1281167
     dataset = dataset.map(partial(transform, image_size=args.image_size)).shuffle()
-    sampler = DistributedSampler(dataset) if args.ddp else None
+    from torch.utils.data import datapipes as dp
+    dataset = dp.iter.IterableWrapper(dataset).sharding_filter()
+    #sampler = DistributedSampler(dataset) if args.ddp and not isinstance(dataset, IterableDataset) else None
     dl = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False if args.ddp or isinstance(dataset, IterableDataset) else True,
         num_workers=args.num_workers,
-        pin_memory=True,
-        pin_memory_device=args.device,
+        pin_memory=True if not args.ddp else False,
+        pin_memory_device=[args.device]if not args.ddp else [],
         persistent_workers=True,
-        sampler=sampler,
+        #sampler=sampler,
     )
     step = 0
     model_path = os.path.join(args.model_dir, args.model.lower())
     os.makedirs(model_path, exist_ok=True)
 
     for epoch in range(args.epochs):
-        if sampler is not None:
-            sampler.set_epoch(epoch)
+        #if sampler is not None:
+        #    sampler.set_epoch(epoch)
         for batch in (pbar := tqdm(dl, total=total_images // args.batch_size, disable=not args.tqdm, dynamic_ncols=True)):
             model.train()
             with torch.autocast("cuda", args.train_dtype, enabled=args.train_dtype != torch.float32):
@@ -194,4 +216,4 @@ def train(args):
 
 if __name__ == "__main__":
     args = parse_args()
-    train(args)
+    spawn(args)
