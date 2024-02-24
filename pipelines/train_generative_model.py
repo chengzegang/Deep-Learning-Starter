@@ -5,6 +5,8 @@ from deep_learning_starter.models import MaskedAutoEncoder
 from deep_learning_starter.datapipes import imagenet1k
 import torch
 import os
+from torch.distributed.tensor.parallel import parallelize_module, ColwiseParallel, RowwiseParallel
+from torch.distributed.device_mesh import init_device_mesh
 import logging
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.data.dataset import IterableDataset
@@ -84,6 +86,9 @@ def init_model(args):
             short_e = str(e)[:128]
             logger.warning(f"Failed to load model from {model_path}. Starting from scratch. {short_e}")
     model.to(memory_format=torch.channels_last)
+
+    tp_mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
+    model = parallelize_module(model, tp_mesh, ColwiseParallel())
     return model
 
 
