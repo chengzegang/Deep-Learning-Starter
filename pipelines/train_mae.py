@@ -158,10 +158,11 @@ def train(args):
                 output = model(batch, batch)
             output.loss.backward()
             if step % args.grad_accum == 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 optimizer.zero_grad()
                 scheduler.step()
-            pbar.set_description(f"Epoch {epoch}, step {step}, loss {output.loss.item():.8f}")
+            pbar.set_description(f"Epoch {epoch}, step {step}, loss {output.loss.item():.8f}, lr {optimizer.param_groups[0]['lr']:.4e}")
 
             if step % args.log_interval == 0:
                 logger.info(f"Epoch {epoch}, step {step}, loss {output.loss.item()}")
