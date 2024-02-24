@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deep_learning_starter"
+dynamic = ["version"]
+description = ''
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+keywords = []
+authors = [
+  { name = "Zegang Cheng", email = "20091803+chengzegang@users.noreply.github.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+]
+dependencies = [
+  'torch>=2.2.1',
+  'tensordict>=0.3.0',
+  'torchvision>=0.17',
+  'roma',
+  'Pillow',
+  'numpy',
+  'tqdm',
+  'timm',
+  'transformers',
+  'datasets',
+  'diffusers',
+  'accelerate',
+  'sentencepiece',
+  'pyarrow',
+  'matplotlib',
+  'jupyter',
+]
+
+[project.urls]
+Documentation = "https://github.com/chengzegang/deep_learning_starter#readme"
+Issues = "https://github.com/chengzegang/deep_learning_starter/issues"
+Source = "https://github.com/chengzegang/deep_learning_starter"
+
+[tool.hatch.version]
+path = "deep_learning_starter/__about__.py"
