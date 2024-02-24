@@ -114,6 +114,30 @@ def transform(data, image_size):
     return data
 
 
+def setup(rank, world_size, args):
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "12355"
+    os.environ["WORLD_SIZE"] = str(world_size)
+    os.environ["RANK"] = str(rank)
+    train(args)
+
+
+def spawn(args):
+    if args.ddp:
+        import torch.multiprocessing as mp
+
+        mp.set_start_method("fork")
+        world_size = torch.cuda.device_count()
+        mp.spawn(
+            setup,
+            args=(
+                world_size,
+                args,
+            ),
+            nprocs=world_size,
+        )
+
+
 def train(args):
     model = init_model(args)
     optimizer = Lion(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, use_triton=False)
