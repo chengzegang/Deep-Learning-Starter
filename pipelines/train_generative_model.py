@@ -45,6 +45,7 @@ def parse_args():
     parser.add_argument("--ddp", action="store_true", help="Use DDP")
     parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
     parser.add_argument("--log-level", type=str, default="INFO", help="Log level")
+    parser.add_argument("--ddp", action="store_true", help="Use DDP")
 
     args = parser.parse_args()
 
