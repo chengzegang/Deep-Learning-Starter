@@ -6,6 +6,7 @@ from deep_learning_starter.datapipes import imagenet1k
 import torch
 import os
 import math
+import torch.multiprocessing as mp
 from torch.distributed.tensor.parallel import parallelize_module, ColwiseParallel, RowwiseParallel
 from torch.distributed.device_mesh import init_device_mesh
 import logging
@@ -101,7 +102,7 @@ def init_model(args):
                     plan[name] = ColwiseParallel()
             return plan
 
-        pplan = build_parrellel_plan(model)
+        pplan = build_parrellel_plan(traced_model)
         traced_model = parallelize_module(traced_model, tp_mesh, pplan)
     return model, traced_model
 
@@ -146,9 +147,6 @@ def setup(rank, world_size, args):
 
 def spawn(args):
     if args.ddp:
-        import torch.multiprocessing as mp
-
-        mp.set_start_method("fork")
         world_size = torch.cuda.device_count()
         mp.spawn(
             setup,
@@ -164,6 +162,9 @@ def spawn(args):
         train(args)
 
 
+def sharding_filter(world_size, rank, data, idx):
+    return idx % world_size == rank
+
 def train(args):
     model, traced_model = init_model(args)
     traced_model = traced_model or model
@@ -173,7 +174,7 @@ def train(args):
     dataset = imagenet1k(args.data_dir)
     total_images = 1281167
     dataset = (
-        dataset.filter(lambda data, idx: True if idx % args.world_size == args.rank else False, with_indices=True)
+        dataset.filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
         .map(partial(transform, image_size=args.image_size))
         .shuffle()
     )
