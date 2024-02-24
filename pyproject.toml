@@ -38,6 +38,7 @@ dependencies = [
   'matplotlib',
   'jupyter',
   'kornia',
+  'lion_pytorch',
 ]
 
 [project.urls]
