@@ -4,3 +4,4 @@ from .rotary import *
 from .swiglu import *
 from .transformer import *
 from .unet import *
+from timm.models.resnet import ResNet

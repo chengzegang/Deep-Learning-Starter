@@ -1,24 +1,45 @@
-__all__ = ["MaskedAutoEncoder"]
+__all__ = ["MaskedAutoEncoder", "MaskedAutoEncoderOutput", "MAE"]
 from argparse import Namespace
+from dataclasses import dataclass
 from typing import Optional
 import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
 from deep_learning_starter.modules import Transformer
 from deep_learning_starter.modules.rmsnorm import RMSNorm
+from . import _utils
+
+
+@dataclass
+class MaskedAutoEncoderOutput:
+    latent_states: Tensor
+    last_hidden_states: Tensor
+    logits: Tensor
+    loss: Optional[Tensor]
+    target: Optional[Tensor]
+
+    @property
+    def plot(self):
+        if self.target is not None:
+            return _utils.plot_pair(self.logits[0], self.target[0])
+        return _utils.plot_one(self.logits[0])
+
+    @property
+    def desc(self):
+        return f"Loss: {self.loss.item():.4f}" if self.loss is not None else "No Loss"
 
 
 class MaskedAutoEncoder(nn.Module):
 
     def __init__(
         self,
-        mask_ratio: float,
-        patch_size: int,
-        hidden_size: int,
-        head_size: int,
-        num_heads: int,
-        num_encoder_layers: int,
-        num_decoder_layers: int,
+        mask_ratio: float = 0.75,
+        patch_size: int = 16,
+        hidden_size: int = 768,
+        head_size: int = 64,
+        num_heads: int = 12,
+        num_encoder_layers: int = 16,
+        num_decoder_layers: int = 8,
         eps: float = 1e-5,
         device=None,
         dtype=None,
@@ -70,4 +91,7 @@ class MaskedAutoEncoder(nn.Module):
         if target is not None:
             loss = F.mse_loss(logits, target)
 
-        return Namespace(latent_states=latent_states, last_hidden_states=last_hidden_states, logits=logits, loss=loss)
+        return MaskedAutoEncoderOutput(latent_states, last_hidden_states, logits, loss, target)
+
+
+MAE = MaskedAutoEncoder

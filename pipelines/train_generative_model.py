@@ -1,5 +1,6 @@
 import argparse
 from functools import partial
+from typing import Type
 from deep_learning_starter.models import MaskedAutoEncoder
 from deep_learning_starter.datapipes import imagenet1k
 import torch
@@ -10,6 +11,8 @@ from torch.utils.data.dataset import IterableDataset
 import torchvision.transforms.v2.functional as TF
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
+from torch import nn
+from lion_pytorch import Lion
 
 logger = logging.getLogger(__name__)
 
@@ -17,16 +20,10 @@ logger = logging.getLogger(__name__)
 def parse_args():
 
     parser = argparse.ArgumentParser(description="Train Masked Auto Encoder")
+    parser.add_argument("--model", type=str, required=True, help="Model class")
+    parser.add_argument("--model-args", type=str, default="", help="Model arguments", nargs="*")
     parser.add_argument("--data-dir", type=str, default="data", help="Path to the data directory")
     parser.add_argument("--image-size", type=int, default=256, help="Size of the input images")
-    parser.add_argument("--mask-ratio", type=float, default=0.75, help="Ratio of the input to mask")
-    parser.add_argument("--patch-size", type=int, default=16, help="Size of the patch")
-    parser.add_argument("--hidden-size", type=int, default=768, help="Size of the hidden layer")
-    parser.add_argument("--head-size", type=int, default=64, help="Size of the head")
-    parser.add_argument("--num-heads", type=int, default=768 // 64, help="Number of heads")
-    parser.add_argument("--num-encoder-layers", type=int, default=16, help="Number of encoder layers")
-    parser.add_argument("--num-decoder-layers", type=int, default=8, help="Number of decoder layers")
-    parser.add_argument("--eps", type=float, default=1e-5, help="Epsilon for RMSNorm")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--min-lr", type=float, default=1e-6, help="Minimum learning rate")
     parser.add_argument("--weight-decay", type=float, default=1e-2, help="Weight decay")
@@ -36,16 +33,20 @@ def parse_args():
     parser.add_argument("--num-workers", type=int, default=8, help="Number of workers")
     parser.add_argument("--log-interval", type=int, default=100, help="Log interval")
     parser.add_argument("--save-interval", type=int, default=1000, help="Save interval")
-    parser.add_argument("--model-path", type=str, default="models/mae", help="Path to the model")
+    parser.add_argument("--model-dir", type=str, default="models/", help="Path to the model directory")
     parser.add_argument("--grad-accum", type=int, default=1, help="Gradient accumulation steps")
+    parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
     parser.add_argument("--tqdm", action="store_true", help="Use tqdm")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device")
     parser.add_argument("--dtype", type=str, default="float32", help="Data type")
     parser.add_argument("--train-dtype", type=str, default="bf16", help="Training data type")
     parser.add_argument("--ddp", action="store_true", help="Use DDP")
     parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
+    parser.add_argument("--log-level", type=str, default="INFO", help="Log level")
 
     args = parser.parse_args()
+
+    logger.setLevel(args.log_level)
     match args.dtype:
         case "float32":
             args.dtype = torch.float32
@@ -71,24 +72,18 @@ def parse_args():
 
 
 def init_model(args):
-    model = MaskedAutoEncoder(
-        args.mask_ratio,
-        args.patch_size,
-        args.hidden_size,
-        args.head_size,
-        args.num_heads,
-        args.num_encoder_layers,
-        args.num_decoder_layers,
-        args.eps,
-        device=args.device,
-        dtype=args.dtype,
-    )
-    if args.model_path is not None and os.path.exists(args.model_path):
+    import deep_learning_starter.models as models
+
+    model_type = models.__dict__.get(args.model)
+    model = model_type(**{k: v for k, v in (arg.split("=") for arg in args.model_args)}, device=args.device, dtype=args.dtype)
+    model_path = os.path.join(args.model_dir, args.model.lower())
+    if model_path is not None and os.path.exists(model_path):
         try:
-            model.load_state_dict(torch.load(os.path.join(args.model_path, "model.pth"), map_location=args.device, mmap=True), assign=True)
+            model.load_state_dict(torch.load(os.path.join(model_path, "model.pth"), map_location=args.device, mmap=True), assign=True)
         except Exception as e:
             short_e = str(e)[:128]
-            logger.warning(f"Failed to load model from {args.model_path}. Starting from scratch. {short_e}")
+            logger.warning(f"Failed to load model from {model_path}. Starting from scratch. {short_e}")
+    model.to(memory_format=torch.channels_last)
     return model
 
 
@@ -114,25 +109,14 @@ def transform(data, image_size):
     return data
 
 
-def show_result(pred, target):
-
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 2, 1)
-    ax.imshow(TF.to_pil_image(pred))
-    ax = fig.add_subplot(1, 2, 2)
-    ax.imshow(TF.to_pil_image(target))
-    fig.tight_layout()
-    return fig
-
-
 def train(args):
     model = init_model(args)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, fused=True)
+    optimizer = Lion(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, use_triton=False)
     scheduler = cosine_warmup_scheduler(optimizer, args.warmup_steps, args.max_steps, args.min_lr)
 
     dataset = imagenet1k(args.data_dir)
     total_images = 1281167
-    dataset = dataset.map(partial(transform, image_size=args.image_size))
+    dataset = dataset.map(partial(transform, image_size=args.image_size)).shuffle()
     sampler = DistributedSampler(dataset) if args.ddp else None
     dl = DataLoader(
         dataset,
@@ -145,7 +129,9 @@ def train(args):
         sampler=sampler,
     )
     step = 0
-    os.makedirs(args.model_path, exist_ok=True)
+    model_path = os.path.join(args.model_dir, args.model.lower())
+    os.makedirs(model_path, exist_ok=True)
+
     for epoch in range(args.epochs):
         if sampler is not None:
             sampler.set_epoch(epoch)
@@ -158,20 +144,20 @@ def train(args):
                 output = model(batch, batch)
             output.loss.backward()
             if step % args.grad_accum == 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip, foreach=True)
                 optimizer.step()
                 optimizer.zero_grad()
                 scheduler.step()
-            pbar.set_description(f"Epoch {epoch}, step {step}, loss {output.loss.item():.8f}, lr {optimizer.param_groups[0]['lr']:.4e}")
+            pbar.set_description(f"Epoch {epoch}, step {step}, {output.desc}, lr {optimizer.param_groups[0]['lr']:.4e}")
 
             if step % args.log_interval == 0:
                 logger.info(f"Epoch {epoch}, step {step}, loss {output.loss.item()}")
-                fig = show_result(output.logits[0].cpu().detach().float().clamp(0, 1), batch[0].cpu().detach().float())
-                fig.savefig(os.path.join(args.model_path, "output.png"))
+                fig = output.plot
+                fig.savefig(os.path.join(model_path, "output.png"))
                 plt.close(fig)
             if step % args.save_interval == 0:
                 model.eval()
-                path = os.path.join(args.model_path, "model.pth")
+                path = os.path.join(model_path, "model.pth")
                 torch.save(model.state_dict(), path + ".tmp")
                 os.replace(path + ".tmp", path)
             step += 1

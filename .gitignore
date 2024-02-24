@@ -162,3 +162,5 @@ cython_debug/
 models/*
 !deep_learning_starter/models
 data/*
+private_use/
+draft.ipynb

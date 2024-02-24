@@ -12,7 +12,7 @@ __all__ = [
     "UnetDecoder2d",
     "UnetDecoder3d",
 ]
-from typing import List, Optional, Tuple, Type
+from typing import Callable, List, Optional, Tuple, Type
 import torch
 from torch import nn, Tensor
 from .transformer import TransformerLayer
@@ -27,11 +27,13 @@ class UnetConvolution(nn.Module):
         out_channels: int,
         bias: bool = True,
         eps: float = 1e-5,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
         super().__init__()
-        self.norm1 = SpatialRMSNorm(in_channels, eps=eps, dtype=dtype, device=device)
+        self.norm1 = normalization(in_channels, eps=eps, dtype=dtype, device=device)
         self.conv1 = convolution_cls(
             in_channels,
             out_channels,
@@ -41,8 +43,9 @@ class UnetConvolution(nn.Module):
             dtype=dtype,
             device=device,
         )
+        self.norm2 = normalization(out_channels, eps=eps, dtype=dtype, device=device)
         self.conv2 = convolution_cls(
-            in_channels,
+            out_channels,
             out_channels,
             kernel_size=3,
             padding=1,
@@ -67,13 +70,16 @@ class UnetConvolution(nn.Module):
             dtype=dtype,
             device=device,
         )
-        self.nonlinear = nn.SiLU(True)
+        self.nonlinear = activation
 
     def forward(self, input_embeds: Tensor) -> Tensor:
         residual = self.shorcut(input_embeds)
         hidden_states = self.norm1(input_embeds)
-        hidden_states = self.nonlinear(self.conv1(hidden_states)) * self.conv2(hidden_states)
-        hidden_states = self.conv3(hidden_states)
+        hidden_states = self.nonlinear(hidden_states)
+        hidden_states = self.conv1(hidden_states)
+        hidden_states = self.norm2(hidden_states)
+        hidden_states = self.nonlinear(hidden_states)
+        hidden_states = self.conv2(hidden_states)
         hidden_states = hidden_states + residual
         return hidden_states
 
@@ -111,6 +117,8 @@ class UnetEncoderLayer(nn.Module):
         head_size: Optional[int] = 64,
         max_seq_length: Optional[int] = 8192,
         freq_base: Optional[int] = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -123,6 +131,8 @@ class UnetEncoderLayer(nn.Module):
             in_channels,
             out_channels,
             bias=bias,
+            activation=activation,
+            normalization=normalization,
             eps=eps,
             dtype=dtype,
             device=device,
@@ -164,7 +174,6 @@ class UnetDecoderLayer(nn.Module):
         self,
         convolution_cls: Type[nn.Module],
         convolution_transpose_cls: Type[nn.Module],
-        scale_sampler_cls: Type[nn.Module],
         in_channels: int,
         out_channels: int,
         unet_shortcut: bool = False,
@@ -175,6 +184,8 @@ class UnetDecoderLayer(nn.Module):
         head_size: Optional[int] = 64,
         max_seq_length: Optional[int] = 8192,
         freq_base: Optional[int] = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -210,6 +221,8 @@ class UnetDecoderLayer(nn.Module):
             in_channels,
             out_channels,
             bias=bias,
+            activation=activation,
+            normalization=normalization,
             eps=eps,
             dtype=dtype,
             device=device,
@@ -243,6 +256,8 @@ class UnetEncoder(nn.Module):
         head_size: int = 64,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -276,6 +291,8 @@ class UnetEncoder(nn.Module):
                     head_size=head_size,
                     max_seq_length=max_seq_length,
                     freq_base=freq_base,
+                    activation=activation,
+                    normalization=normalization,
                     dtype=dtype,
                     device=device,
                 )
@@ -295,7 +312,7 @@ class UnetEncoder(nn.Module):
             else None
         )
 
-        self.out_norm = SpatialRMSNorm(num_features=_out_channels[-1], eps=eps, dtype=dtype, device=device)
+        self.out_norm = normalization(num_features=_out_channels[-1], eps=eps, dtype=dtype, device=device)
         self.out_conv = convolution_cls(
             _out_channels[-1],
             latent_dim,
@@ -304,7 +321,7 @@ class UnetEncoder(nn.Module):
             dtype=dtype,
             device=device,
         )
-        self.nonlinear = nn.SiLU(True)
+        self.nonlinear = activation
 
     def _sequential_forward(self, input_embeds: Tensor) -> Tensor:
         embeds = self.in_conv(input_embeds)
@@ -355,6 +372,8 @@ class UnetDecoder(nn.Module):
         head_size: int = 64,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -389,14 +408,13 @@ class UnetDecoder(nn.Module):
             if unet_latent_attention
             else None
         )
-        self.in_norm = SpatialRMSNorm(num_features=_in_channels[0], eps=eps, dtype=dtype, device=device)
+        self.in_norm = normalization(num_features=_in_channels[0], eps=eps, dtype=dtype, device=device)
 
         for i in range(num_layers):
             self.layers.append(
                 UnetDecoderLayer(
                     convolution_cls=convolution_cls,
                     convolution_transpose_cls=convolution_transpose_cls,
-                    scale_sampler_cls=convolution_cls,
                     in_channels=_in_channels[i],
                     out_channels=_out_channels[i],
                     unet_shortcut=unet_shortcut,
@@ -407,11 +425,13 @@ class UnetDecoder(nn.Module):
                     head_size=head_size,
                     max_seq_length=max_seq_length,
                     freq_base=freq_base,
+                    activation=activation,
+                    normalization=normalization,
                     dtype=dtype,
                     device=device,
                 )
             )
-        self.out_norm = SpatialRMSNorm(_out_channels[-1], eps=eps, dtype=dtype, device=device)
+        self.out_norm = normalization(_out_channels[-1], eps=eps, dtype=dtype, device=device)
         self.out_conv = convolution_cls(
             _out_channels[-1],
             out_channels,
@@ -420,7 +440,7 @@ class UnetDecoder(nn.Module):
             dtype=dtype,
             device=device,
         )
-        self.nonlinear = nn.SiLU(True)
+        self.nonlinear = activation
 
     def _sequential_forward(self, latent: Tensor) -> Tensor:
         embeds = self.in_conv(latent)
@@ -473,6 +493,8 @@ class Unet(nn.Module):
         head_size: int = 64,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -494,6 +516,8 @@ class Unet(nn.Module):
             head_size,
             max_seq_length,
             freq_base,
+            activation,
+            normalization,
             dtype,
             device,
         )
@@ -513,6 +537,8 @@ class Unet(nn.Module):
             head_size,
             max_seq_length,
             freq_base,
+            activation,
+            normalization,
             dtype,
             device,
         )
@@ -554,6 +580,8 @@ class UnetEncoder1d(UnetEncoder):
         head_size: int = 64,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -573,6 +601,8 @@ class UnetEncoder1d(UnetEncoder):
             head_size,
             max_seq_length,
             freq_base,
+            activation,
+            normalization,
             dtype,
             device,
         )
@@ -594,6 +624,8 @@ class UnetEncoder2d(UnetEncoder):
         head_size: int = 64,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -613,6 +645,8 @@ class UnetEncoder2d(UnetEncoder):
             head_size,
             max_seq_length,
             freq_base,
+            activation,
+            normalization,
             dtype,
             device,
         )
@@ -635,6 +669,8 @@ class UnetEncoder3d(UnetEncoder):
         head_size: int = 64,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -654,6 +690,8 @@ class UnetEncoder3d(UnetEncoder):
             head_size,
             max_seq_length,
             freq_base,
+            activation,
+            normalization,
             dtype,
             device,
         )
@@ -675,6 +713,8 @@ class UnetDecoder1d(UnetDecoder):
         head_size: int = 64,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -695,6 +735,8 @@ class UnetDecoder1d(UnetDecoder):
             head_size,
             max_seq_length,
             freq_base,
+            activation,
+            normalization,
             dtype,
             device,
         )
@@ -716,13 +758,14 @@ class UnetDecoder2d(UnetDecoder):
         head_size: int = 64,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
         super().__init__(
             nn.Conv2d,
             nn.ConvTranspose2d,
-            nn.Conv2d,
             out_channels,
             latent_dim,
             unet_shortcut,
@@ -736,6 +779,8 @@ class UnetDecoder2d(UnetDecoder):
             head_size,
             max_seq_length,
             freq_base,
+            activation,
+            normalization,
             dtype,
             device,
         )
@@ -757,6 +802,8 @@ class UnetDecoder3d(UnetDecoder):
         head_size: int = 64,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -777,6 +824,8 @@ class UnetDecoder3d(UnetDecoder):
             head_size,
             max_seq_length,
             freq_base,
+            activation,
+            normalization,
             dtype,
             device,
         )
@@ -799,6 +848,8 @@ class Unet1d(Unet):
         head_size: int = 64,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -820,6 +871,8 @@ class Unet1d(Unet):
             head_size,
             max_seq_length,
             freq_base,
+            activation,
+            normalization,
             dtype,
             device,
         )
@@ -842,6 +895,8 @@ class Unet2d(Unet):
         head_size: int = 64,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -862,6 +917,8 @@ class Unet2d(Unet):
             head_size,
             max_seq_length,
             freq_base,
+            activation,
+            normalization,
             dtype,
             device,
         )
@@ -885,6 +942,8 @@ class Unet3d(Unet):
         head_size: int = 64,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
+        activation: Callable = nn.SiLU(True),
+        normalization: Type[nn.Module] = SpatialRMSNorm,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -905,6 +964,8 @@ class Unet3d(Unet):
             head_size,
             max_seq_length,
             freq_base,
+            activation,
+            normalization,
             dtype,
             device,
         )
