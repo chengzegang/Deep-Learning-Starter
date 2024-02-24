@@ -92,7 +92,7 @@ def init_model(args):
     traced_model = None
     if args.ddp:
         tp_mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
-        traced_model = DDP(model, parameter_as_bucket=True, static_graph=True)
+        traced_model = DDP(model, gradient_as_bucket_view=True, static_graph=True)
 
         def build_parrellel_plan(model):
             plan = {}
