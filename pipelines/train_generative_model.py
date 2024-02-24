@@ -87,21 +87,23 @@ def init_model(args):
             short_e = str(e)[:128]
             logger.warning(f"Failed to load model from {model_path}. Starting from scratch. {short_e}")
     model.to(memory_format=torch.channels_last)
-    from torch.nn.parallel importr DistributedDataParallel as DDP
+    from torch.nn.parallel import DistributedDataParallel as DDP
+
+    traced_model = None
     if args.ddp:
-        ddp_model = DDP(model, parameter_as_bucket=True, static_graph=True)
-    tp_mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
-    
-    def build_parrellel_plan(model):
-        plan = {}
-        for name, mod in model.named_modules():
-            if isinstance(mod, (nn.Linear, nn.Embedding)):
-                plan[name] = ColwiseParallel()
-        return plan
-    
-    pplan = build_parrellel_plan(model)
-    model = parallelize_module(model, tp_mesh, pplan)
-    return model
+        tp_mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
+        traced_model = DDP(model, parameter_as_bucket=True, static_graph=True)
+
+        def build_parrellel_plan(model):
+            plan = {}
+            for name, mod in model.named_modules():
+                if isinstance(mod, (nn.Linear, nn.Embedding)):
+                    plan[name] = ColwiseParallel()
+            return plan
+
+        pplan = build_parrellel_plan(model)
+        traced_model = parallelize_module(traced_model, tp_mesh, pplan)
+    return model, traced_model
 
 
 def cosine_warmup_scheduler(optimizer, warmup_steps, max_steps, min_lr, last_epoch=-1):
@@ -131,7 +133,7 @@ def setup(rank, world_size, args):
     os.environ["MASTER_PORT"] = "12355"
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["RANK"] = str(rank)
-    logger.info(f'[rank {rank}: {world_size} started')
+    logger.info(f"[rank {rank}: {world_size} started")
     args.device = torch.device(rank)
     if rank != 0:
         args.tqdm = False
@@ -159,41 +161,47 @@ def spawn(args):
 
 
 def train(args):
-    model = init_model(args)
-    optimizer = Lion(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, use_triton=False)
+    model, traced_model = init_model(args)
+    traced_model = traced_model or model
+    optimizer = Lion(traced_model.parameters(), lr=args.lr, weight_decay=args.weight_decay, use_triton=False)
     scheduler = cosine_warmup_scheduler(optimizer, args.warmup_steps, args.max_steps, args.min_lr)
 
     dataset = imagenet1k(args.data_dir)
     total_images = 1281167
     dataset = dataset.map(partial(transform, image_size=args.image_size)).shuffle()
     from torch.utils.data import datapipes as dp
+
     dataset = dp.iter.IterableWrapper(dataset).sharding_filter()
-    #sampler = DistributedSampler(dataset) if args.ddp and not isinstance(dataset, IterableDataset) else None
+    # sampler = DistributedSampler(dataset) if args.ddp and not isinstance(dataset, IterableDataset) else None
     dl = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False if args.ddp or isinstance(dataset, IterableDataset) else True,
         num_workers=args.num_workers,
         pin_memory=True if not args.ddp else False,
-        pin_memory_device=[args.device]if not args.ddp else [],
+        pin_memory_device=[args.device] if not args.ddp else [],
         persistent_workers=True,
-        #sampler=sampler,
+        # sampler=sampler,
     )
     step = 0
     model_path = os.path.join(args.model_dir, args.model.lower())
     os.makedirs(model_path, exist_ok=True)
 
     for epoch in range(args.epochs):
-        #if sampler is not None:
+        # if sampler is not None:
         #    sampler.set_epoch(epoch)
         for batch in (pbar := tqdm(dl, total=total_images // args.batch_size, disable=not args.tqdm, dynamic_ncols=True)):
-            model.train()
-            with torch.autocast("cuda", args.train_dtype, enabled=args.train_dtype != torch.float32):
-                batch = (
-                    batch["image"].to(device=args.device, dtype=args.dtype, non_blocking=True).contiguous(memory_format=torch.channels_last)
-                )
-                output = model(batch, batch)
-            output.loss.backward()
+            traced_model.train()
+            batch = batch["image"].to(device=args.device, dtype=args.dtype, non_blocking=True).contiguous(memory_format=torch.channels_last)
+            if args.ddp and step % args.grad_accum != 0:
+                with traced_model.no_sync():
+                    with torch.autocast("cuda", args.train_dtype, enabled=args.train_dtype != torch.float32):
+                        output = traced_model(batch, batch)
+                    output.loss.backward()
+            else:
+                with torch.autocast("cuda", args.train_dtype, enabled=args.train_dtype != torch.float32):
+                    output = traced_model(batch, batch)
+                output.loss.backward()
             if step % args.grad_accum == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip, foreach=True)
                 optimizer.step()
