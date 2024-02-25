@@ -10,6 +10,7 @@ import torch.multiprocessing as mp
 from torch.distributed.tensor.parallel import parallelize_module, ColwiseParallel, RowwiseParallel
 from torch.distributed.device_mesh import init_device_mesh
 import logging
+from torch.optim import SGD
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.data.dataset import IterableDataset
 import torchvision.transforms.v2.functional as TF
@@ -167,7 +168,8 @@ def train(args):
         traced_model = DDP(model.to(args.device), bucket_cap_mb=32, gradient_as_bucket_view=True, static_graph=True)
         state = PostLocalSGDState(process_group=None, subgroup=None, start_localSGD_iter=100)
         traced_model.register_comm_hook(state, post_localSGD_hook)
-    local_optimizer = Lion(traced_model.parameters(), lr=args.lr, weight_decay=args.weight_decay, use_triton=False)
+    # local_optimizer = Lion(traced_model.parameters(), lr=args.lr, weight_decay=args.weight_decay, use_triton=False)
+    local_optimizer = SGD(traced_model.parameters(), lr=args.lr, weight_decay=args.weight_decay, momentum=0.9)
     scheduler = cosine_warmup_scheduler(local_optimizer, args.warmup_steps, args.max_steps, args.min_lr)
     if args.ddp:
         optimizer = PostLocalSGDOptimizer(local_optimizer, averager=averagers.PeriodicModelAverager(period=4, warmup_steps=100))
@@ -176,7 +178,8 @@ def train(args):
     dataset = imagenet1k(args.data_dir)
     total_images = 1281167
     dataset = (
-        dataset.shuffle(seed=0).filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
+        dataset.shuffle(seed=0)
+        .filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
         .map(partial(transform, image_size=args.image_size))
     )
     dl = DataLoader(
@@ -210,7 +213,7 @@ def train(args):
             if step % args.grad_accum == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip, foreach=True)
                 optimizer.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
             pbar.set_description(f"Epoch {epoch}, step {step}, {output.desc}, lr {optimizer.param_groups[0]['lr']:.4e}")
 
