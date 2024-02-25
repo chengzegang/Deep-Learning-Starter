@@ -16,7 +16,15 @@ import torchvision.transforms.v2.functional as TF
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 from torch import nn
+import torch.distributed.algorithms.model_averaging.averagers as averagers
 from lion_pytorch import Lion
+from torch.distributed.optim import PostLocalSGDOptimizer
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+from torch.distributed.algorithms.ddp_comm_hooks.post_localSGD_hook import (
+    PostLocalSGDState,
+    post_localSGD_hook,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +85,8 @@ def parse_args():
 
 def init_model(args):
     import deep_learning_starter.models as models
-    move_to_device = args.device if not args.ddp else 'cpu'
+
+    move_to_device = args.device if not args.ddp else "cpu"
     model_type = models.__dict__.get(args.model)
     model = model_type(**{k: v for k, v in (arg.split("=") for arg in args.model_args)}, device=move_to_device, dtype=args.dtype)
     model_path = os.path.join(args.model_dir, args.model.lower())
@@ -88,25 +97,7 @@ def init_model(args):
             short_e = str(e)[:128]
             logger.warning(f"Failed to load model from {model_path}. Starting from scratch. {short_e}")
     model.to(memory_format=torch.channels_last)
-    from torch.nn.parallel import DistributedDataParallel as DDP
-    import torch.distributed as dist
-    traced_model = None
-    if args.ddp:
-        dist.init_process_group('nccl')
-        #tp_mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
-        #os.environ['CUDA_VISIBLE_DEVICES']=str(args.rank)
-        #torch.cuda.set_device(args.rank)
-        traced_model = DDP(model.to(args.device), bucket_cap_mb=32, gradient_as_bucket_view=True, static_graph=True)
-        #def build_parrellel_plan(model):
-        #    plan = {}
-        #    for name, mod in model.named_modules():
-        #        if isinstance(mod, (nn.Linear, nn.Embedding)):
-        #            plan[name] = ColwiseParallel()
-        #    return plan
-        #
-        #pplan = build_parrellel_plan(traced_model)
-        #traced_model = parallelize_module(traced_model, tp_mesh, pplan)
-    return model, traced_model
+    return model
 
 
 def cosine_warmup_scheduler(optimizer, warmup_steps, max_steps, min_lr, last_epoch=-1):
@@ -167,12 +158,21 @@ def spawn(args):
 def sharding_filter(world_size, rank, data, idx):
     return idx % world_size == rank
 
-def train(args):
-    model, traced_model = init_model(args)
-    traced_model = traced_model or model
-    optimizer = Lion(traced_model.parameters(), lr=args.lr, weight_decay=args.weight_decay, use_triton=False)
-    scheduler = cosine_warmup_scheduler(optimizer, args.warmup_steps, args.max_steps, args.min_lr)
 
+def train(args):
+    model = init_model(args)
+    traced_model = model
+    if args.ddp:
+        dist.init_process_group("nccl")
+        traced_model = DDP(model.to(args.device), bucket_cap_mb=32, gradient_as_bucket_view=True, static_graph=True)
+        state = PostLocalSGDState(process_group=None, subgroup=None, start_localSGD_iter=100)
+        traced_model.register_comm_hook(state, post_localSGD_hook)
+    local_optimizer = Lion(traced_model.parameters(), lr=args.lr, weight_decay=args.weight_decay, use_triton=False)
+    scheduler = cosine_warmup_scheduler(local_optimizer, args.warmup_steps, args.max_steps, args.min_lr)
+    if args.ddp:
+        optimizer = PostLocalSGDOptimizer(local_optimizer, averager=averagers.PeriodicModelAverager(period=4, warmup_steps=100))
+    else:
+        optimizer = local_optimizer
     dataset = imagenet1k(args.data_dir)
     total_images = 1281167
     dataset = (
@@ -192,9 +192,10 @@ def train(args):
     model_path = os.path.join(args.model_dir, args.model.lower())
     os.makedirs(model_path, exist_ok=True)
 
+    total_samples = total_images // args.world_size // args.batch_size
     for epoch in range(args.epochs):
 
-        for batch in (pbar := tqdm(dl, total=total_images // args.batch_size, disable=not args.tqdm, dynamic_ncols=True)):
+        for batch in (pbar := tqdm(dl, total=total_samples, disable=not args.tqdm, dynamic_ncols=True)):
             traced_model.train()
             batch = batch["image"].to(device=args.device, dtype=args.dtype, non_blocking=True).contiguous(memory_format=torch.channels_last)
             if args.ddp and step % args.grad_accum != 0:
