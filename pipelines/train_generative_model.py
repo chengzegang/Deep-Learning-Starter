@@ -131,10 +131,6 @@ def setup(rank, world_size, args):
     args.world_size = world_size
     args.rank = rank
     args.device = torch.device(rank)
-    if rank != 0:
-        args.tqdm = False
-        args.save_interval = math.inf
-        args.log_interval = math.inf
     train(args)
 
 
@@ -195,7 +191,7 @@ def train(args):
     total_samples = total_images // args.world_size // args.batch_size
     for epoch in range(args.epochs):
 
-        for batch in (pbar := tqdm(dl, total=total_samples, disable=not args.tqdm, dynamic_ncols=True)):
+        for batch in (pbar := tqdm(dl, total=total_samples, disable=not args.tqdm or not args.rank == 0, dynamic_ncols=True)):
             traced_model.train()
             batch = batch["image"].to(device=args.device, dtype=args.dtype, non_blocking=True).contiguous(memory_format=torch.channels_last)
             if args.ddp and step % args.grad_accum != 0:
@@ -214,12 +210,12 @@ def train(args):
                 scheduler.step()
             pbar.set_description(f"Epoch {epoch}, step {step}, {output.desc}, lr {optimizer.param_groups[0]['lr']:.4e}")
 
-            if step % args.log_interval == 0:
+            if step % args.log_interval == 0 and args.rank == 0:
                 logger.info(f"Epoch {epoch}, step {step}, loss {output.loss.item()}")
                 fig = output.plot
                 fig.savefig(os.path.join(model_path, "output.png"))
                 plt.close(fig)
-            if step % args.save_interval == 0:
+            if step % args.save_interval == 0 and args.rank == 0:
                 model.eval()
                 path = os.path.join(model_path, "model.pth")
                 torch.save(model.state_dict(), path + ".tmp")
