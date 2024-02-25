@@ -1,4 +1,8 @@
 import torch.backends
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.allow_tf32 = True
