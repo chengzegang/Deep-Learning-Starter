@@ -95,15 +95,15 @@ def init_model(args):
         tp_mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
         traced_model = DDP(model, gradient_as_bucket_view=True, static_graph=True, device_mesh=tp_mesh)
 
-        def build_parrellel_plan(model):
-            plan = {}
-            for name, mod in model.named_modules():
-                if isinstance(mod, (nn.Linear, nn.Embedding)):
-                    plan[name] = ColwiseParallel()
-            return plan
-
-        pplan = build_parrellel_plan(traced_model)
-        traced_model = parallelize_module(traced_model, tp_mesh, pplan)
+        #def build_parrellel_plan(model):
+        #    plan = {}
+        #    for name, mod in model.named_modules():
+        #        if isinstance(mod, (nn.Linear, nn.Embedding)):
+        #            plan[name] = ColwiseParallel()
+        #    return plan
+        #
+        #pplan = build_parrellel_plan(traced_model)
+        #traced_model = parallelize_module(traced_model, tp_mesh, pplan)
     return model, traced_model
 
 
