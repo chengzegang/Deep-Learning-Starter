@@ -176,9 +176,8 @@ def train(args):
     dataset = imagenet1k(args.data_dir)
     total_images = 1281167
     dataset = (
-        dataset.filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
+        dataset.shuffle(seed=0).filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
         .map(partial(transform, image_size=args.image_size))
-        .shuffle()
     )
     dl = DataLoader(
         dataset,
