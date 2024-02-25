@@ -77,24 +77,26 @@ def parse_args():
 
 def init_model(args):
     import deep_learning_starter.models as models
-
+    move_to_device = args.device if not args.ddp else 'cpu'
     model_type = models.__dict__.get(args.model)
-    model = model_type(**{k: v for k, v in (arg.split("=") for arg in args.model_args)}, device=args.device, dtype=args.dtype)
+    model = model_type(**{k: v for k, v in (arg.split("=") for arg in args.model_args)}, device=move_to_device, dtype=args.dtype)
     model_path = os.path.join(args.model_dir, args.model.lower())
     if model_path is not None and os.path.exists(model_path):
         try:
-            model.load_state_dict(torch.load(os.path.join(model_path, "model.pth"), map_location=args.device, mmap=True), assign=True)
+            model.load_state_dict(torch.load(os.path.join(model_path, "model.pth"), map_location=move_to_device, mmap=True), assign=True)
         except Exception as e:
             short_e = str(e)[:128]
             logger.warning(f"Failed to load model from {model_path}. Starting from scratch. {short_e}")
     model.to(memory_format=torch.channels_last)
     from torch.nn.parallel import DistributedDataParallel as DDP
-
+    import torch.distributed as dist
     traced_model = None
     if args.ddp:
-        tp_mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
-        traced_model = DDP(model, gradient_as_bucket_view=True, static_graph=True, device_mesh=tp_mesh)
-
+        dist.init_process_group('nccl')
+        #tp_mesh = init_device_mesh("cuda", (torch.cuda.device_count(),))
+        #os.environ['CUDA_VISIBLE_DEVICES']=str(args.rank)
+        #torch.cuda.set_device(args.rank)
+        traced_model = DDP(model.to(args.device), bucket_cap_mb=32, gradient_as_bucket_view=True, static_graph=True)
         #def build_parrellel_plan(model):
         #    plan = {}
         #    for name, mod in model.named_modules():
@@ -192,8 +194,7 @@ def train(args):
     os.makedirs(model_path, exist_ok=True)
 
     for epoch in range(args.epochs):
-        # if sampler is not None:
-        #    sampler.set_epoch(epoch)
+
         for batch in (pbar := tqdm(dl, total=total_images // args.batch_size, disable=not args.tqdm, dynamic_ncols=True)):
             traced_model.train()
             batch = batch["image"].to(device=args.device, dtype=args.dtype, non_blocking=True).contiguous(memory_format=torch.channels_last)
