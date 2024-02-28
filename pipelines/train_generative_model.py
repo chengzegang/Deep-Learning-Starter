@@ -26,6 +26,8 @@ from torch.distributed.algorithms.ddp_comm_hooks.post_localSGD_hook import (
     PostLocalSGDState,
     post_localSGD_hook,
 )
+import webdataset as wds
+from datasets import load_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +39,7 @@ def parse_args():
     parser.add_argument("--model-args", type=str, default="", help="Model arguments", nargs="*")
     parser.add_argument("--data-dir", type=str, default="data", help="Path to the data directory")
     parser.add_argument("--image-size", type=int, default=256, help="Size of the input images")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--min-lr", type=float, default=1e-6, help="Minimum learning rate")
     parser.add_argument("--weight-decay", type=float, default=1e-2, help="Weight decay")
     parser.add_argument("--warmup-steps", type=int, default=2000, help="Number of warmup steps")
@@ -54,7 +56,7 @@ def parse_args():
     parser.add_argument("--dtype", type=str, default="float32", help="Data type")
     parser.add_argument("--train-dtype", type=str, default="bf16", help="Training data type")
     parser.add_argument("--ddp", action="store_true", help="Use DDP")
-    parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
+    parser.add_argument("--epochs", type=int, default=1, help="Number of epochs")
     parser.add_argument("--log-level", type=str, default="INFO", help="Log level")
 
     args = parser.parse_args()
@@ -156,6 +158,26 @@ def sharding_filter(world_size, rank, data, idx):
     return idx % world_size == rank
 
 
+from PIL import Image
+import httpx
+import io
+
+
+def download(data):
+    try:
+        resp = httpx.get(
+            data["image"],
+            follow_redirects=True,
+            timeout=1,
+        )
+        resp.raise_for_status()
+        data["image"] = Image.open(io.BytesIO(resp.content))
+        return data
+    except Exception:
+        data["image"] = None
+        return data
+
+
 def train(args):
     model = init_model(args)
     traced_model = model
@@ -165,24 +187,34 @@ def train(args):
         state = PostLocalSGDState(process_group=None, subgroup=None, start_localSGD_iter=100)
         traced_model.register_comm_hook(state, post_localSGD_hook)
     # local_optimizer = Lion(traced_model.parameters(), lr=args.lr, weight_decay=args.weight_decay, use_triton=False)
-    local_optimizer = SGD(traced_model.parameters(), lr=args.lr, weight_decay=args.weight_decay, momentum=0.9)
+    local_optimizer = Lion(traced_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = cosine_warmup_scheduler(local_optimizer, args.warmup_steps, args.max_steps, args.min_lr)
     if args.ddp:
         optimizer = PostLocalSGDOptimizer(local_optimizer, averager=averagers.PeriodicModelAverager(period=4, warmup_steps=100))
     else:
         optimizer = local_optimizer
-    dataset = imagenet1k(args.data_dir)
-    total_images = 1281167
     dataset = (
-        dataset.shuffle(seed=0)
+        load_dataset("imagenet-1k", split="train", cache_dir="data", streaming=True)
         .filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
+        .shuffle(seed=0)
         .map(partial(transform, image_size=args.image_size))
     )
+    # dataset = (
+    #    load_dataset("guangyil/laion-coco-aesthetic", split="train", streaming=True)
+    #    .filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
+    #    .select_columns("url")
+    #    .rename_column("url", "image")
+    #    .map(download)
+    #    .filter(lambda x: x["image"] is not None)
+    #    # .shuffle(seed=0)
+    #    .map(partial(transform, image_size=args.image_size))
+    # )
+    total_images = 1281167
     dl = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False if args.ddp or isinstance(dataset, IterableDataset) else True,
-        num_workers=min(args.num_workers, dataset.n_shards),
+        num_workers=args.num_workers,
         pin_memory=True if not args.ddp else False,
         pin_memory_device=str(args.device) if not args.ddp else "",
         persistent_workers=True,

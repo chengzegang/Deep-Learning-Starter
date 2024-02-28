@@ -53,7 +53,7 @@ class RMSNorm(nn.Module):
 def fused_spatial_rmsnorm(x: Tensor, weight: Tensor, bias: Tensor, eps: float = 1e-5) -> Tensor:
     shape = x.shape
     x = x.view(x.shape[0], x.shape[1], -1)
-    x = x * torch.rsqrt((x**2).mean(dim=-1, keepdim=True) + eps) * weight.view(-1, 1) + bias.view(-1, 1)
+    x = x * torch.rsqrt((x**2).mean(dim=1, keepdim=True) + eps) * weight.view(-1, 1) + bias.view(-1, 1)
     x = x.view(shape)
     return x
 

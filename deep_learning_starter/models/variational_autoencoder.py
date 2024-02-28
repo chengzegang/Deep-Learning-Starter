@@ -58,7 +58,7 @@ class DiagonalGaussianDistribution:
     @property
     @torch.autocast("cuda", torch.float32)
     def kl_loss(self) -> Tensor:
-        return -0.5 * torch.mean(1 + self.logvar - self.mean.pow(2) - self.logvar.exp())
+        return -0.5 * torch.sum(1 + self.logvar - self.mean.pow(2) - self.logvar.exp())
 
 
 class VariationalAutoEncoder(nn.Module):
@@ -81,17 +81,16 @@ class VariationalAutoEncoder(nn.Module):
         latent_dist = self.encode(input)
         latent_sample = latent_dist.sample
         sample = self.decode(latent_sample)
-        rec_loss = F.mse_loss(rgb_to_lab(sample.clamp(0, 1)), rgb_to_lab(input)) / 256
+        rec_loss = F.mse_loss(sample, input, reduction="sum")
         kl_loss = latent_dist.kl_loss
-        ratio = latent_sample.numel() / sample.numel()
-        loss = rec_loss + kl_loss_weight * kl_loss.mean() * ratio
+        loss = rec_loss + kl_loss_weight * kl_loss
         return VariationalAutoEncoderOutput(sample, input, latent_dist, rec_loss, kl_loss, loss)
 
 
 class VariationalAutoEncoder2d(VariationalAutoEncoder):
 
     def __init__(
-        self, in_channels: int = 3, base_channels: int = 64, latent_channels: int = 8, num_layers: int = 3, device=None, dtype=None
+        self, in_channels: int = 3, base_channels: int = 64, latent_channels: int = 4, num_layers: int = 3, device=None, dtype=None
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -100,10 +99,30 @@ class VariationalAutoEncoder2d(VariationalAutoEncoder):
         self.num_layers = num_layers
 
         self.encoder = UnetEncoder2d(
-            in_channels, latent_channels * 2, False, False, True, base_channels, 2, num_layers, device=device, dtype=dtype
+            in_channels,
+            latent_channels * 2,
+            False,
+            False,
+            True,
+            base_channels,
+            2,
+            num_layers,
+            device=device,
+            dtype=dtype,
+            activation=nn.ReLU(True),
         )
         self.decoder = UnetDecoder2d(
-            in_channels, latent_channels, False, False, True, base_channels, 2, num_layers, device=device, dtype=dtype
+            in_channels,
+            latent_channels,
+            False,
+            False,
+            True,
+            base_channels,
+            2,
+            num_layers,
+            device=device,
+            dtype=dtype,
+            activation=nn.ReLU(True),
         )
 
 
