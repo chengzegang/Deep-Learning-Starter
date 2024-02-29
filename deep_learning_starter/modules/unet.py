@@ -37,7 +37,7 @@ class UnetConvolution(nn.Module):
         self.conv1 = convolution_cls(
             in_channels,
             out_channels,
-            kernel_size=2,
+            kernel_size=3,
             padding=1,
             bias=bias,
             dtype=dtype,

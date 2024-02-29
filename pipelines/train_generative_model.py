@@ -27,7 +27,7 @@ from torch.distributed.algorithms.ddp_comm_hooks.post_localSGD_hook import (
     post_localSGD_hook,
 )
 import webdataset as wds
-from datasets import load_dataset
+from datasets import load_dataset, DownloadConfig
 
 logger = logging.getLogger(__name__)
 
