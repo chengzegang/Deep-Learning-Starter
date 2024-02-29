@@ -26,6 +26,7 @@ from torch.distributed.algorithms.ddp_comm_hooks.post_localSGD_hook import (
     PostLocalSGDState,
     post_localSGD_hook,
 )
+import glob
 import webdataset as wds
 from datasets import load_dataset, DownloadConfig
 
@@ -193,23 +194,20 @@ def train(args):
         optimizer = PostLocalSGDOptimizer(local_optimizer, averager=averagers.PeriodicModelAverager(period=4, warmup_steps=100))
     else:
         optimizer = local_optimizer
-    dataset = (
-        load_dataset("imagenet-1k", split="train", cache_dir="data", streaming=True)
-        .filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
-        .shuffle(seed=0)
-        .map(partial(transform, image_size=args.image_size))
-    )
     # dataset = (
-    #    load_dataset("guangyil/laion-coco-aesthetic", split="train", streaming=True)
+    #    load_dataset("imagenet-1k", split="train", cache_dir="data", streaming=True)
+    #    .shuffle(seed=0)
     #    .filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
-    #    .select_columns("url")
-    #    .rename_column("url", "image")
-    #    .map(download)
-    #    .filter(lambda x: x["image"] is not None)
-    #    # .shuffle(seed=0)
     #    .map(partial(transform, image_size=args.image_size))
     # )
-    total_images = 1281167
+    dataset = (
+        wds.WebDataset(glob.iglob("/mnt/g/datasets/cc12m/*.tar"), nodesplitter=wds.shardlists.split_by_worker)
+        .decode("torchrgb")
+        .rename_keys(image="jpg", caption="txt")
+        .shuffle(1000)
+        # .map(partial(transform, image_size=args.image_size))
+    )
+    total_images = 11990000
     dl = DataLoader(
         dataset,
         batch_size=args.batch_size,
