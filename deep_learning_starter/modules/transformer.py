@@ -53,24 +53,28 @@ class Attention(nn.Module):
             num_heads * head_size,
             dtype=dtype,
             device=device,
+            bias=False,
         )
         self.k_proj = nn.Linear(
             hidden_states,
             num_heads * head_size,
             dtype=dtype,
             device=device,
+            bias=False,
         )
         self.v_proj = nn.Linear(
             hidden_states,
             num_heads * head_size,
             dtype=dtype,
             device=device,
+            bias=False,
         )
         self.out_proj = nn.Linear(
             num_heads * head_size,
             hidden_states,
             dtype=dtype,
             device=device,
+            bias=False,
         )
         self.rotary = RotaryEmbedding(
             head_size,
@@ -121,7 +125,7 @@ class TransformerLayer(nn.Module):
         head_size: int,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
-        eps: float = 1e-5,
+        eps: float = 1e-8,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -134,7 +138,7 @@ class TransformerLayer(nn.Module):
             head_size (int): The size of each attention head.
             max_seq_length (int, optional): The maximum sequence length. Defaults to 8192.
             freq_base (int, optional): The base frequency for sinusoidal positional encoding. Defaults to 10000.
-            eps (float, optional): The epsilon value for RMSNorm. Defaults to 1e-5.
+            eps (float, optional): The epsilon value for RMSNorm. Defaults to 1e-8.
             dtype (torch.dtype, optional): The data type of the tensors. Defaults to None.
             device (torch.device, optional): The device to use for computation. Defaults to None.
         """
@@ -195,7 +199,7 @@ class ConditionalTransformerLayer(nn.Module):
         head_size: int,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
-        eps: float = 1e-5,
+        eps: float = 1e-8,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -208,7 +212,7 @@ class ConditionalTransformerLayer(nn.Module):
             head_size (int): The size of each attention head.
             max_seq_length (int, optional): The maximum sequence length. Defaults to 8192.
             freq_base (int, optional): The base frequency for positional encoding. Defaults to 10000.
-            eps (float, optional): A small value to avoid division by zero. Defaults to 1e-5.
+            eps (float, optional): A small value to avoid division by zero. Defaults to 1e-8.
             dtype (torch.dtype, optional): The data type of the tensors. Defaults to None.
             device (torch.device, optional): The device to use for computation. Defaults to None.
         """
@@ -291,7 +295,7 @@ class Transformer(nn.Module):
         head_size: int,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
-        eps: float = 1e-5,
+        eps: float = 1e-8,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -305,7 +309,7 @@ class Transformer(nn.Module):
             head_size (int): The size of each attention head.
             max_seq_length (int, optional): The maximum sequence length. Defaults to 8192.
             freq_base (int, optional): The base frequency for sinusoidal positional encoding. Defaults to 10000.
-            eps (float, optional): A small value to avoid division by zero. Defaults to 1e-5.
+            eps (float, optional): A small value to avoid division by zero. Defaults to 1e-8.
             dtype (torch.dtype, optional): The data type of the input tensors. Defaults to None.
             device (torch.device, optional): The device to use for computation. Defaults to None.
         """
@@ -358,7 +362,7 @@ class ConditionalTransformer(nn.Module):
         head_size: int,
         max_seq_length: int = 8192,
         freq_base: int = 10000,
-        eps: float = 1e-5,
+        eps: float = 1e-8,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -372,7 +376,7 @@ class ConditionalTransformer(nn.Module):
             head_size (int): The size of each attention head.
             max_seq_length (int, optional): The maximum sequence length. Defaults to 8192.
             freq_base (int, optional): The base frequency for positional encoding. Defaults to 10000.
-            eps (float, optional): A small value to avoid division by zero. Defaults to 1e-5.
+            eps (float, optional): A small value to avoid division by zero. Defaults to 1e-8.
             dtype (torch.dtype, optional): The data type of the tensors. Defaults to None.
             device (torch.device, optional): The device to use for computation. Defaults to None.
         """

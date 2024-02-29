@@ -8,8 +8,8 @@ from typing import Optional
 
 
 @torch.jit.script
-def fused_rmsnorm(x: Tensor, weight: Tensor, bias: Tensor, eps: float = 1e-5) -> Tensor:
-    x = x * torch.rsqrt((x**2).mean(dim=-1, keepdim=True) + eps) * weight + bias
+def fused_rmsnorm(x: Tensor, weight: Tensor, eps: float = 1e-8) -> Tensor:
+    x = x * torch.rsqrt((x**2).mean(dim=-1, keepdim=True) + eps) * weight
     return x
 
 
@@ -17,7 +17,7 @@ class RMSNorm(nn.Module):
     def __init__(
         self,
         hidden_size: int,
-        eps: float = 1e-5,
+        eps: float = 1e-8,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ) -> None:
@@ -26,7 +26,7 @@ class RMSNorm(nn.Module):
 
         Args:
             hidden_size (int): The size of the hidden dimension.
-            eps (float, optional): A small value added to the denominator for numerical stability. Defaults to 1e-5.
+            eps (float, optional): A small value added to the denominator for numerical stability. Defaults to 1e-8.
             dtype (torch.dtype, optional): The desired data type of the weight tensor. Defaults to None.
             device (torch.device, optional): The desired device of the weight tensor. Defaults to None.
         """
@@ -46,14 +46,14 @@ class RMSNorm(nn.Module):
         Returns:
             Tensor: The output tensor after applying RMSNorm.
         """
-        return fused_rmsnorm(x, self.weight, self.bias, self.eps)  # eps of bfloat16
+        return fused_rmsnorm(x, self.weight, self.eps)  # eps of bfloat16
 
 
 @torch.jit.script
-def fused_spatial_rmsnorm(x: Tensor, weight: Tensor, bias: Tensor, eps: float = 1e-5) -> Tensor:
+def fused_spatial_rmsnorm(x: Tensor, weight: Tensor, eps: float = 1e-8) -> Tensor:
     shape = x.shape
     x = x.view(x.shape[0], x.shape[1], -1)
-    x = x * torch.rsqrt((x**2).mean(dim=1, keepdim=True) + eps) * weight.view(-1, 1) + bias.view(-1, 1)
+    x = x * torch.rsqrt((x**2).mean(dim=1, keepdim=True) + eps) * weight.view(-1, 1)
     x = x.view(shape)
     return x
 
@@ -62,7 +62,7 @@ class SpatialRMSNorm(nn.Module):
     def __init__(
         self,
         num_features: int,
-        eps: float = 1e-5,
+        eps: float = 1e-8,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ) -> None:
@@ -71,7 +71,7 @@ class SpatialRMSNorm(nn.Module):
 
         Args:
             num_features (int): Number of input features.
-            eps (float, optional): Small value added to the denominator for numerical stability. Default is 1e-5.
+            eps (float, optional): Small value added to the denominator for numerical stability. Default is 1e-8.
             dtype (torch.dtype, optional): Data type of the parameters. Default is None.
             device (torch.device, optional): Device where the parameters are stored. Default is None.
         """
@@ -79,7 +79,6 @@ class SpatialRMSNorm(nn.Module):
         self.num_features = num_features
         self.eps = eps
         self.scale = nn.Parameter(torch.ones(num_features, dtype=dtype, device=device))
-        self.bias = nn.Parameter(torch.zeros(num_features, dtype=dtype, device=device))
 
     def forward(self, hidden_states: Tensor) -> Tensor:
         """
@@ -91,4 +90,4 @@ class SpatialRMSNorm(nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying SpatialRMSNorm.
         """
-        return fused_spatial_rmsnorm(hidden_states, self.scale, self.bias, self.eps)
+        return fused_spatial_rmsnorm(hidden_states, self.scale, self.eps)

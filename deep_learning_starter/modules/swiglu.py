@@ -8,9 +8,7 @@ from typing import Optional
 
 
 @torch.jit.script
-def fused_swiglu(
-    x: Tensor, w1: Tensor, b1: Optional[Tensor], w2: Tensor, b2: Optional[Tensor], w3: Tensor, b3: Optional[Tensor]
-) -> Tensor:
+def fused_swiglu(x: Tensor, w1: Tensor, b1: Optional[Tensor], w2: Tensor, b2: Optional[Tensor], w3: Tensor, b3: Optional[Tensor]) -> Tensor:
     x1 = F.linear(x, w1, b1)
     x2 = F.linear(x, w2, b2)
     hidden = F.silu(x1) * x2
@@ -53,18 +51,21 @@ class SwiGLU(nn.Module):
             hidden_features,
             dtype=dtype,
             device=device,
+            bias=False,
         )
         self.w2 = nn.Linear(
             in_features,
             hidden_features,
             dtype=dtype,
             device=device,
+            bias=False,
         )
         self.w3 = nn.Linear(
             hidden_features,
             out_features,
             dtype=dtype,
             device=device,
+            bias=False,
         )
         self.hidden_features = hidden_features
         self.out_features = out_features
