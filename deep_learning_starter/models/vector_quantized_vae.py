@@ -1,9 +1,10 @@
 __all__ = [
-    "VectorQuantizedVariationalAutoEncoder",
     "VectorQuantizedVariationalAutoEncoderOutput",
     "VectorQuantization",
-    "VariationalAutoEncoder2d",
-    "VariationalAutoEncoder3d",
+    "VectorQuantizedVariationalAutoEncoder",
+    "VectorQuantizedVariationalAutoEncoder2d",
+    "VectorQuantizedVariationalAutoEncoder3d",
+    "VQVAE",
     "VQVAE2d",
     "VQVAE3d",
 ]
@@ -83,7 +84,7 @@ class VectorQuantizedVariationalAutoEncoder(nn.Module):
         return VectorQuantizedVariationalAutoEncoderOutput(sample, input, latent_dist, rec_loss, latent_dist.vq_loss, loss)
 
 
-class VariationalAutoEncoder2d(VectorQuantizedVariationalAutoEncoder):
+class VectorQuantizedVariationalAutoEncoder2d(VectorQuantizedVariationalAutoEncoder):
 
     def __init__(
         self,
@@ -131,7 +132,7 @@ class VariationalAutoEncoder2d(VectorQuantizedVariationalAutoEncoder):
         )
 
 
-class VariationalAutoEncoder3d(VectorQuantizedVariationalAutoEncoder):
+class VectorQuantizedVariationalAutoEncoder3d(VectorQuantizedVariationalAutoEncoder):
 
     def __init__(
         self, in_channels: int = 1, base_channels: int = 128, latent_channels: int = 4, num_layers: int = 3, device=None, dtype=None
@@ -146,5 +147,6 @@ class VariationalAutoEncoder3d(VectorQuantizedVariationalAutoEncoder):
         self.decoder = UnetDecoder3d(in_channels, latent_channels, False, True, base_channels, 2, num_layers, device=device, dtype=dtype)
 
 
-VQVAE2d = VariationalAutoEncoder2d
-VQVAE3d = VariationalAutoEncoder3d
+VQVAE = VectorQuantizedVariationalAutoEncoder
+VQVAE2d = VectorQuantizedVariationalAutoEncoder2d
+VQVAE3d = VectorQuantizedVariationalAutoEncoder3d

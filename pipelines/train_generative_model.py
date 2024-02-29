@@ -31,7 +31,7 @@ import glob
 import webdataset as wds
 from datasets import load_dataset, DownloadConfig
 
-from deep_learning_starter.models.vector_quantized_vae import VQVAE2d
+from deep_learning_starter.models.vector_quantized_vae import VQVAE, VQVAE2d
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,7 @@ def train(args):
     model = init_model(args)
     avg_model = None
     mod_to_ema = None
-    if isinstance(model, VQVAE2d):
+    if isinstance(model, VQVAE):
         mod_to_ema = model.latent_embeddings
         avg_model = swa_utils.AveragedModel(mod_to_ema, device=args.device, avg_fn=swa_utils.get_ema_avg_fn(0.999), use_buffers=True)
     traced_model = model
