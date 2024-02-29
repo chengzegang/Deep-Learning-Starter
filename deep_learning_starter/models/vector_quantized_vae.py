@@ -43,7 +43,7 @@ class VectorQuantization:
     quantized_mapping: Tensor
     vq_loss: Tensor
 
-    def __init__(self, latent_states: Tensor, embeddings: Tensor, commitment_cost: float = 0.25):
+    def __init__(self, latent_states: Tensor, embeddings: Tensor):
         shape = latent_states.shape[2:]
         latent_states = latent_states.flatten(2).transpose(-1, -2)
         with torch.no_grad():
@@ -52,10 +52,7 @@ class VectorQuantization:
 
         quant_latent_states = torch.einsum("bnk,kc->bnc", self.quantized_mapping, embeddings)
         self.quantized_embeddings = latent_states + (quant_latent_states - latent_states).detach()
-        self.vq_loss = (
-            F.mse_loss(latent_states, quant_latent_states.detach()) * (1 - commitment_cost)
-            + F.mse_loss(latent_states.detach(), quant_latent_states) * commitment_cost
-        )
+        self.vq_loss = F.mse_loss(latent_states, quant_latent_states)
         self.quantized_embeddings = self.quantized_embeddings.transpose(-1, -2).reshape(latent_states.shape[0], -1, *shape)
 
 
@@ -66,12 +63,12 @@ class VectorQuantizedVariationalAutoEncoder(nn.Module):
     latent_channels: int
     num_layers: int
     encoder: nn.Module
-    latent_embeddings: nn.Parameter
+    latent_embeddings: nn.ParameterDict
     decoder: nn.Module
 
     def encode(self, input: Tensor) -> VectorQuantization:
         latent_states = self.encoder(input)
-        return VectorQuantization(latent_states, self.latent_embeddings, 0.1)
+        return VectorQuantization(latent_states, self.latent_embeddings["weight"])
 
     def decode(self, sample: Tensor) -> Tensor:
         return self.decoder(sample)
@@ -103,8 +100,10 @@ class VariationalAutoEncoder2d(VectorQuantizedVariationalAutoEncoder):
         self.base_channels = base_channels
         self.latent_channels = latent_channels
         self.num_layers = num_layers
-        self.latent_embeddings = nn.Parameter(torch.empty(embedding_size, latent_channels, device=device, dtype=dtype), requires_grad=True)
-        nn.init.normal_(self.latent_embeddings, mean=0, std=1 / math.sqrt(latent_channels))
+        self.latent_embeddings = nn.ParameterDict(
+            {"weight": nn.Parameter(torch.empty(embedding_size, latent_channels, device=device, dtype=dtype), requires_grad=True)}
+        )
+        nn.init.normal_(self.latent_embeddings["weight"], mean=0, std=1 / math.sqrt(latent_channels))
 
         self.encoder = UnetEncoder2d(
             in_channels,

@@ -26,9 +26,12 @@ from torch.distributed.algorithms.ddp_comm_hooks.post_localSGD_hook import (
     PostLocalSGDState,
     post_localSGD_hook,
 )
+from torch.optim import swa_utils
 import glob
 import webdataset as wds
 from datasets import load_dataset, DownloadConfig
+
+from deep_learning_starter.models.vector_quantized_vae import VQVAE2d
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +184,11 @@ def download(data):
 
 def train(args):
     model = init_model(args)
+    avg_model = None
+    if isinstance(model, VQVAE2d):
+        avg_model = swa_utils.AveragedModel(
+            model.latent_embeddings, device=args.device, avg_fn=swa_utils.get_ema_avg_fn(0.999), use_buffers=True
+        )
     traced_model = model
     if args.ddp:
         dist.init_process_group("nccl")
@@ -241,6 +249,8 @@ def train(args):
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
+                if avg_model is not None:
+                    avg_model.update_parameters(model.latent_embeddings)
             pbar.set_description(f"Epoch {epoch}, step {step}, {output.desc}, lr {optimizer.param_groups[0]['lr']:.4e}")
 
             if step % args.log_interval == 0 and args.rank == 0:
