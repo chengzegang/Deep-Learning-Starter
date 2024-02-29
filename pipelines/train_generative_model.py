@@ -41,6 +41,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train Masked Auto Encoder")
     parser.add_argument("--model", type=str, required=True, help="Model class")
     parser.add_argument("--model-args", type=str, default="", help="Model arguments", nargs="*")
+    parser.add_argument("--data-loader", type=str, default="webdataset", help="Data loader", choices=["webdataset", "datasets"])
     parser.add_argument("--data-dir", type=str, default="data", help="Path to the data directory")
     parser.add_argument("--image-size", type=int, default=256, help="Size of the input images")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
@@ -185,10 +186,10 @@ def download(data):
 def train(args):
     model = init_model(args)
     avg_model = None
+    mod_to_ema = None
     if isinstance(model, VQVAE2d):
-        avg_model = swa_utils.AveragedModel(
-            model.latent_embeddings, device=args.device, avg_fn=swa_utils.get_ema_avg_fn(0.999), use_buffers=True
-        )
+        mod_to_ema = model.latent_embeddings
+        avg_model = swa_utils.AveragedModel(mod_to_ema, device=args.device, avg_fn=swa_utils.get_ema_avg_fn(0.999), use_buffers=True)
     traced_model = model
     if args.ddp:
         dist.init_process_group("nccl")
@@ -202,19 +203,22 @@ def train(args):
         optimizer = PostLocalSGDOptimizer(local_optimizer, averager=averagers.PeriodicModelAverager(period=4, warmup_steps=100))
     else:
         optimizer = local_optimizer
-    # dataset = (
-    #    load_dataset("imagenet-1k", split="train", cache_dir="data", streaming=True)
-    #    .shuffle(seed=0)
-    #    .filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
-    #    .map(partial(transform, image_size=args.image_size))
-    # )
-    dataset = (
-        wds.WebDataset(glob.iglob("/mnt/g/datasets/cc12m/*.tar"), nodesplitter=wds.shardlists.split_by_worker)
-        .decode("torchrgb")
-        .rename_keys(image="jpg", caption="txt")
-        .shuffle(1000)
-        # .map(partial(transform, image_size=args.image_size))
-    )
+    dataset = None
+    if args.data_loader == "datasets":
+        dataset = (
+            load_dataset("imagenet-1k", split="train", cache_dir="data", streaming=True)
+            .shuffle(seed=0)
+            .filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
+            .map(partial(transform, image_size=args.image_size))
+        )
+    elif args.data_loader == "webdataset":
+        dataset = (
+            wds.WebDataset(glob.iglob(args.data_dir), nodesplitter=wds.shardlists.split_by_worker)
+            .decode("torchrgb")
+            .rename_keys(image="jpg", caption="txt")
+            .shuffle(1000)
+            # .map(partial(transform, image_size=args.image_size))
+        )
     total_images = 11990000
     dl = DataLoader(
         dataset,
@@ -250,7 +254,7 @@ def train(args):
                 optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
                 if avg_model is not None:
-                    avg_model.update_parameters(model.latent_embeddings)
+                    avg_model.update_parameters(mod_to_ema)
             pbar.set_description(f"Epoch {epoch}, step {step}, {output.desc}, lr {optimizer.param_groups[0]['lr']:.4e}")
 
             if step % args.log_interval == 0 and args.rank == 0:
