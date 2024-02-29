@@ -109,7 +109,6 @@ class VariationalAutoEncoder2d(VariationalAutoEncoder):
             num_layers,
             device=device,
             dtype=dtype,
-            activation=nn.ReLU(True),
         )
         self.decoder = UnetDecoder2d(
             in_channels,
@@ -122,7 +121,6 @@ class VariationalAutoEncoder2d(VariationalAutoEncoder):
             num_layers,
             device=device,
             dtype=dtype,
-            activation=nn.ReLU(True),
         )
 
 

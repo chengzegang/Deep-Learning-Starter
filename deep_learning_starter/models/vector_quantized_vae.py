@@ -75,11 +75,13 @@ class VectorQuantizedVariationalAutoEncoder(nn.Module):
         return self.decoder(sample)
 
     def forward(
-        self, input: Tensor, target: Optional[Tensor] = None, kl_loss_weight: float = 0.1
+        self, input: Tensor, target: Optional[Tensor] = None, kl_loss_weight: float = 1.0
     ) -> VectorQuantizedVariationalAutoEncoderOutput:
         latent_dist = self.encode(input)
         sample = self.decode(latent_dist.quantized_embeddings)
-        rec_loss = F.mse_loss(sample, target)
+        rec_loss = F.mse_loss(sample, sample.clamp(0, 1).detach())
+        sample = sample + (sample.clamp(0, 1) - sample).detach()
+        rec_loss = rec_loss + F.mse_loss(rgb_to_lab(sample), rgb_to_lab(target)) / 256
         loss = rec_loss + kl_loss_weight * latent_dist.vq_loss
         return VectorQuantizedVariationalAutoEncoderOutput(sample, input, latent_dist, rec_loss, latent_dist.vq_loss, loss)
 
