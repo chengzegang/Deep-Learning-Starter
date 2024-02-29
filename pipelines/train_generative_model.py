@@ -76,8 +76,6 @@ def parse_args():
             args.dtype = torch.float16
         case "bfloat16":
             args.dtype = torch.bfloat16
-        case _:
-            raise ValueError(f"Unsupported dtype {args.dtype}")
 
     match args.train_dtype:
         case "bf16":
@@ -86,8 +84,6 @@ def parse_args():
             args.train_dtype = torch.float32
         case "f16":
             args.train_dtype = torch.float16
-        case _:
-            raise ValueError(f"Unsupported dtype {args.dtype}")
     return args
 
 
