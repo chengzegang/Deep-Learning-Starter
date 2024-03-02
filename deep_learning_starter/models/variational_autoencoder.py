@@ -13,9 +13,12 @@ from deep_learning_starter.modules import UnetEncoder2d, UnetDecoder2d, UnetEnco
 import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
+
+from deep_learning_starter.modules.rmsnorm import SpatialRMSNorm
 from . import _utils
 from kornia.color import rgb_to_lab
 from dataclasses import dataclass
+import torchvision.transforms.v2.functional as TF
 
 
 @dataclass
@@ -58,7 +61,7 @@ class DiagonalGaussianDistribution:
     @property
     @torch.autocast("cuda", torch.float32)
     def kl_loss(self) -> Tensor:
-        return -0.5 * torch.sum(1 + self.logvar - self.mean.pow(2) - self.logvar.exp())
+        return -0.5 * torch.mean(1 + self.logvar - self.mean.pow(2) - self.logvar.exp())
 
 
 class VariationalAutoEncoder(nn.Module):
@@ -69,6 +72,7 @@ class VariationalAutoEncoder(nn.Module):
     num_layers: int
     encoder: nn.Module
     decoder: nn.Module
+    _feature_extractor: nn.Module
 
     def encode(self, input: Tensor) -> DiagonalGaussianDistribution:
         latent_states = self.encoder(input)
@@ -81,7 +85,13 @@ class VariationalAutoEncoder(nn.Module):
         latent_dist = self.encode(input)
         latent_sample = latent_dist.sample
         sample = self.decode(latent_sample)
-        rec_loss = F.mse_loss(sample, input, reduction="sum")
+        rec_loss = F.l1_loss(sample, input)
+        nsample = TF.normalize(sample, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ninput = TF.normalize(input, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        sample_feats = self._feature_extractor(nsample, output_hidden_states=True).hidden_states
+        input_feats = self._feature_extractor(ninput, output_hidden_states=True).hidden_states
+        for sf, inf in zip(sample_feats, input_feats):
+            rec_loss += F.mse_loss(sf, inf)
         kl_loss = latent_dist.kl_loss
         loss = rec_loss + kl_loss_weight * kl_loss
         return VariationalAutoEncoderOutput(sample, input, latent_dist, rec_loss, kl_loss, loss)
@@ -90,7 +100,7 @@ class VariationalAutoEncoder(nn.Module):
 class VariationalAutoEncoder2d(VariationalAutoEncoder):
 
     def __init__(
-        self, in_channels: int = 3, base_channels: int = 64, latent_channels: int = 4, num_layers: int = 3, device=None, dtype=None
+        self, in_channels: int = 3, base_channels: int = 64, latent_channels: int = 12, num_layers: int = 3, device=None, dtype=None
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -107,8 +117,11 @@ class VariationalAutoEncoder2d(VariationalAutoEncoder):
             base_channels,
             2,
             num_layers,
+            bias=True,
             device=device,
             dtype=dtype,
+            max_seq_length=16384,
+            normalization=SpatialRMSNorm,
         )
         self.decoder = UnetDecoder2d(
             in_channels,
@@ -119,9 +132,17 @@ class VariationalAutoEncoder2d(VariationalAutoEncoder):
             base_channels,
             2,
             num_layers,
+            bias=True,
             device=device,
             dtype=dtype,
+            max_seq_length=16384,
+            normalization=SpatialRMSNorm,
         )
+
+        from transformers import ResNetBackbone
+
+        self._feature_extractor = ResNetBackbone.from_pretrained("microsoft/resnet-50", torch_dtype=dtype, device_map=device)
+        self._feature_extractor.requires_grad_(False)
 
 
 class VariationalAutoEncoder3d(VariationalAutoEncoder):

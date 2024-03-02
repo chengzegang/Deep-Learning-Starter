@@ -12,6 +12,7 @@ __all__ = [
     "UnetDecoder2d",
     "UnetDecoder3d",
 ]
+from functools import partial
 from typing import Callable, List, Optional, Tuple, Type
 import torch
 from torch import nn, Tensor
@@ -28,11 +29,12 @@ class UnetConvolution(nn.Module):
         bias: bool = False,
         eps: float = 1e-8,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
         super().__init__()
+
         self.norm1 = normalization(in_channels, eps=eps, dtype=dtype, device=device)
         self.conv1 = convolution_cls(
             in_channels,
@@ -118,7 +120,7 @@ class UnetEncoderLayer(nn.Module):
         max_seq_length: Optional[int] = 8192,
         freq_base: Optional[int] = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -185,7 +187,7 @@ class UnetDecoderLayer(nn.Module):
         max_seq_length: Optional[int] = 8192,
         freq_base: Optional[int] = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -257,7 +259,7 @@ class UnetEncoder(nn.Module):
         max_seq_length: int = 8192,
         freq_base: int = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -312,7 +314,7 @@ class UnetEncoder(nn.Module):
             else None
         )
 
-        self.out_norm = normalization(num_features=_out_channels[-1], eps=eps, dtype=dtype, device=device)
+        self.out_norm = normalization(_out_channels[-1], eps=eps, dtype=dtype, device=device)
         self.out_conv = convolution_cls(
             _out_channels[-1],
             latent_dim,
@@ -373,7 +375,7 @@ class UnetDecoder(nn.Module):
         max_seq_length: int = 8192,
         freq_base: int = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -408,7 +410,7 @@ class UnetDecoder(nn.Module):
             if unet_latent_attention
             else None
         )
-        self.in_norm = normalization(num_features=_in_channels[0], eps=eps, dtype=dtype, device=device)
+        self.in_norm = normalization(_in_channels[0], eps=eps, dtype=dtype, device=device)
 
         for i in range(num_layers):
             self.layers.append(
@@ -494,7 +496,7 @@ class Unet(nn.Module):
         max_seq_length: int = 8192,
         freq_base: int = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -581,7 +583,7 @@ class UnetEncoder1d(UnetEncoder):
         max_seq_length: int = 8192,
         freq_base: int = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -625,7 +627,7 @@ class UnetEncoder2d(UnetEncoder):
         max_seq_length: int = 8192,
         freq_base: int = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -670,7 +672,7 @@ class UnetEncoder3d(UnetEncoder):
         max_seq_length: int = 8192,
         freq_base: int = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -714,7 +716,7 @@ class UnetDecoder1d(UnetDecoder):
         max_seq_length: int = 8192,
         freq_base: int = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -759,7 +761,7 @@ class UnetDecoder2d(UnetDecoder):
         max_seq_length: int = 8192,
         freq_base: int = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -803,7 +805,7 @@ class UnetDecoder3d(UnetDecoder):
         max_seq_length: int = 8192,
         freq_base: int = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -849,7 +851,7 @@ class Unet1d(Unet):
         max_seq_length: int = 8192,
         freq_base: int = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -896,7 +898,7 @@ class Unet2d(Unet):
         max_seq_length: int = 8192,
         freq_base: int = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):
@@ -943,7 +945,7 @@ class Unet3d(Unet):
         max_seq_length: int = 8192,
         freq_base: int = 10000,
         activation: Callable = nn.SiLU(True),
-        normalization: Type[nn.Module] = SpatialRMSNorm,
+        normalization: Type[nn.Module] = partial(nn.GroupNorm, num_groups=32),
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
     ):

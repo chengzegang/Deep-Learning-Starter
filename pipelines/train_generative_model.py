@@ -10,7 +10,7 @@ import torch.multiprocessing as mp
 from torch.distributed.tensor.parallel import parallelize_module, ColwiseParallel, RowwiseParallel
 from torch.distributed.device_mesh import init_device_mesh
 import logging
-from torch.optim import SGD
+from torch.optim import SGD, AdamW
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.data.dataset import IterableDataset
 import torchvision.transforms.v2.functional as TF
@@ -30,7 +30,7 @@ from torch.optim import swa_utils
 import glob
 import webdataset as wds
 from datasets import load_dataset, DownloadConfig
-
+from torch.utils.tensorboard import SummaryWriter
 from deep_learning_starter.models.vector_quantized_vae import VQVAE, VQVAE2d
 
 logger = logging.getLogger(__name__)
@@ -46,11 +46,11 @@ def parse_args():
     parser.add_argument("--image-size", type=int, default=256, help="Size of the input images")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--min-lr", type=float, default=1e-6, help="Minimum learning rate")
-    parser.add_argument("--weight-decay", type=float, default=1e-2, help="Weight decay")
+    parser.add_argument("--weight-decay", type=float, default=1e-5, help="Weight decay")
     parser.add_argument("--warmup-steps", type=int, default=2000, help="Number of warmup steps")
     parser.add_argument("--max-steps", type=int, default=100000, help="Number of max steps")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
-    parser.add_argument("--num-workers", type=int, default=8, help="Number of workers")
+    parser.add_argument("--num-workers", type=int, default=16, help="Number of workers")
     parser.add_argument("--log-interval", type=int, default=100, help="Log interval")
     parser.add_argument("--save-interval", type=int, default=1000, help="Save interval")
     parser.add_argument("--model-dir", type=str, default="models/", help="Path to the model directory")
@@ -109,9 +109,9 @@ def cosine_warmup_scheduler(optimizer, warmup_steps, max_steps, min_lr, last_epo
         if current_step < warmup_steps:
             return current_step / warmup_steps
         elif current_step < max_steps:
-            return 0.5 * (1 + torch.cos(torch.tensor(current_step - warmup_steps) * (3.14159 / (max_steps - warmup_steps))))
+            return 0.5 * (1 + math.cos(math.pi * (current_step - warmup_steps) / (max_steps - warmup_steps)))
         else:
-            return min_lr / optimizer.param_groups[0]["lr"]
+            return min_lr
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
 
@@ -181,20 +181,16 @@ def download(data):
 
 def train(args):
     model = init_model(args)
-    avg_model = None
-    mod_to_ema = None
-    if isinstance(model, VQVAE):
-        mod_to_ema = model.latent_embeddings
-        avg_model = swa_utils.AveragedModel(mod_to_ema, device=args.device, avg_fn=swa_utils.get_ema_avg_fn(0.999), use_buffers=True)
     traced_model = model
+
     if args.ddp:
         dist.init_process_group("nccl")
         traced_model = DDP(model.to(args.device), bucket_cap_mb=32, gradient_as_bucket_view=True, static_graph=True)
         state = PostLocalSGDState(process_group=None, subgroup=None, start_localSGD_iter=100)
         traced_model.register_comm_hook(state, post_localSGD_hook)
-    # local_optimizer = Lion(traced_model.parameters(), lr=args.lr, weight_decay=args.weight_decay, use_triton=False)
-    local_optimizer = Lion(traced_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = cosine_warmup_scheduler(local_optimizer, args.warmup_steps, args.max_steps, args.min_lr)
+
+    local_optimizer = AdamW(traced_model.parameters(), lr=args.lr, weight_decay=args.weight_decay, fused=True)
+    scheduler = cosine_warmup_scheduler(local_optimizer, args.warmup_steps, args.max_steps, args.min_lr / args.lr)
     if args.ddp:
         optimizer = PostLocalSGDOptimizer(local_optimizer, averager=averagers.PeriodicModelAverager(period=4, warmup_steps=100))
     else:
@@ -230,34 +226,39 @@ def train(args):
     os.makedirs(model_path, exist_ok=True)
 
     total_samples = total_images // args.world_size // args.batch_size
+    avg_model = swa_utils.AveragedModel(traced_model, device=args.device, avg_fn=swa_utils.get_ema_avg_fn(0.999), use_buffers=True)
+    writer = SummaryWriter(os.path.join(model_path, "logs"))
     for epoch in range(args.epochs):
 
         for batch in (pbar := tqdm(dl, total=total_samples, disable=not args.tqdm or not args.rank == 0, dynamic_ncols=True)):
             traced_model.train()
             batch = batch["image"].to(device=args.device, dtype=args.dtype, non_blocking=True).contiguous(memory_format=torch.channels_last)
+
             if args.ddp and step % args.grad_accum != 0:
                 with traced_model.no_sync():
                     with torch.autocast("cuda", args.train_dtype, enabled=args.train_dtype != torch.float32):
                         output = traced_model(batch, batch)
-                    output.loss.backward()
+                    (output.loss / args.grad_accum).backward()
             else:
                 with torch.autocast("cuda", args.train_dtype, enabled=args.train_dtype != torch.float32):
                     output = traced_model(batch, batch)
-                output.loss.backward()
+                (output.loss / args.grad_accum).backward()
             if step % args.grad_accum == 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip, foreach=True)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip, foreach=True)
+                writer.add_scalar("GradNorm", grad_norm, step, new_style=True)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
-                if avg_model is not None:
-                    avg_model.update_parameters(mod_to_ema)
+                writer.add_scalar("LR", scheduler.get_last_lr()[0], step, new_style=True)
+                avg_model.update_parameters(traced_model)
             pbar.set_description(f"Epoch {epoch}, step {step}, {output.desc}, lr {optimizer.param_groups[0]['lr']:.4e}")
-
+            writer.add_scalar("Loss/Rec", output.rec_loss.item(), step, new_style=True)
+            writer.add_scalar("Loss/KL", output.kl_loss.item(), step, new_style=True)
             if step % args.log_interval == 0 and args.rank == 0:
                 logger.info(f"Epoch {epoch}, step {step}, loss {output.loss.item()}")
                 fig = output.plot
                 fig.savefig(os.path.join(model_path, "output.png"))
-                plt.close(fig)
+                writer.add_figure("Rec", fig, step)
             if step % args.save_interval == 0 and args.rank == 0:
                 model.eval()
                 path = os.path.join(model_path, "model.pth")
