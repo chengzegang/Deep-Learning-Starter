@@ -40,7 +40,6 @@ logger = logging.getLogger(__name__)
 def parse_args():
 
     parser = argparse.ArgumentParser(description="Train Masked Auto Encoder")
-    parser.add_argument("--model", type=str, required=True, help="Model class")
     parser.add_argument("--model-args", type=str, default="", help="Model arguments", nargs="*")
     parser.add_argument("--data-loader", type=str, default="webdataset", help="Data loader", choices=["webdataset", "datasets"])
     parser.add_argument("--data-dir", type=str, default="data", help="Path to the data directory")
@@ -63,7 +62,7 @@ def parse_args():
     parser.add_argument("--train-dtype", type=str, default="bf16", help="Training data type")
     parser.add_argument("--ddp", action="store_true", help="Use DDP")
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs")
-    parser.add_argument("--log-level", type=str, default="INFO", help="Log level")
+    parser.add_argument("--log-level", type=str, default="ERROR", help="Log level")
 
     args = parser.parse_args()
 
@@ -91,9 +90,11 @@ def parse_args():
 def init_model(args):
     import deep_learning_starter.models as models
 
-    move_to_device = args.device if not args.ddp else "cpu"
-    model_type = models.__dict__.get(args.model)
-    model = model_type(**{k: v for k, v in (arg.split("=") for arg in args.model_args)}, device=move_to_device, dtype=args.dtype)
+    move_to_device = torch.device(args.device)
+    autoencoder = models.VAE2d(device=move_to_device, dtype=args.dtype)
+    model = models.LatentDiffusionText2Image(
+        autoencoder, **{k: v for k, v in (arg.split("=") for arg in args.model_args)}, device=move_to_device, dtype=args.dtype
+    )
     model_path = os.path.join(args.model_dir, args.model.lower())
     if model_path is not None and os.path.exists(model_path):
         try:
@@ -101,6 +102,8 @@ def init_model(args):
         except Exception as e:
             short_e = str(e)[:128]
             logger.warning(f"Failed to load model from {model_path}. Starting from scratch. {short_e}")
+    model.autoencoder.load_state_dict(torch.load("models/vae2d/model.pth", map_location=move_to_device, mmap=True), assign=True)
+    model.autoencoder.requires_grad_(False)
     model.to(memory_format=torch.channels_last)
     return model
 
@@ -191,6 +194,7 @@ def download(data):
 
 
 def train(args):
+    args.model = "ldm"
     model = init_model(args)
     traced_model = model
 
@@ -206,22 +210,13 @@ def train(args):
         optimizer = PostLocalSGDOptimizer(local_optimizer, averager=averagers.PeriodicModelAverager(period=4, warmup_steps=100))
     else:
         optimizer = local_optimizer
-    dataset = None
-    if args.data_loader == "datasets":
-        dataset = (
-            ImageFolder("/mnt/d/coolipa/512_girls")
-            # load_dataset("imagenet-1k", split="train", cache_dir="data", streaming=True)
-            .shuffle().sharding_filter()
-            # .filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
-        )
-    elif args.data_loader == "webdataset":
-        dataset = (
-            wds.WebDataset(glob.iglob(args.data_dir), nodesplitter=wds.shardlists.split_by_worker)
-            .decode("torchrgb")
-            .rename_keys(image="jpg", caption="txt")
-            .shuffle(1000)
-            # .map(partial(transform, image_size=args.image_size))
-        )
+
+    dataset = (
+        wds.WebDataset(glob.iglob(args.data_dir), nodesplitter=wds.shardlists.split_by_worker)
+        .decode("torchrgb")
+        .rename_keys(image="jpg", caption="txt")
+        .shuffle(1000)
+    )
     total_images = 11990000
     dl = DataLoader(
         dataset,
@@ -243,16 +238,16 @@ def train(args):
 
         for batch in (pbar := tqdm(dl, total=total_samples, disable=not args.tqdm or not args.rank == 0, dynamic_ncols=True)):
             traced_model.train()
-            batch = batch["image"].to(device=args.device, dtype=args.dtype, non_blocking=True).contiguous(memory_format=torch.channels_last)
-
+            image = batch["image"].to(device=args.device, dtype=args.dtype, non_blocking=True).contiguous(memory_format=torch.channels_last)
+            text = batch["caption"]
             if args.ddp and step % args.grad_accum != 0:
                 with traced_model.no_sync():
                     with torch.autocast("cuda", args.train_dtype, enabled=args.train_dtype != torch.float32):
-                        output = traced_model(batch, batch)
+                        output = traced_model(image, text)
                     (output.loss / args.grad_accum).backward()
             else:
                 with torch.autocast("cuda", args.train_dtype, enabled=args.train_dtype != torch.float32):
-                    output = traced_model(batch, batch)
+                    output = traced_model(image, text)
                 (output.loss / args.grad_accum).backward()
             if step % args.grad_accum == 0:
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip, foreach=True)
@@ -263,8 +258,7 @@ def train(args):
                 writer.add_scalar("LR", scheduler.get_last_lr()[0], step, new_style=True)
                 avg_model.update_parameters(traced_model)
             pbar.set_description(f"Epoch {epoch}, step {step}, {output.desc}, lr {optimizer.param_groups[0]['lr']:.4e}")
-            writer.add_scalar("Loss/Rec", output.rec_loss.item(), step, new_style=True)
-            writer.add_scalar("Loss/KL", output.kl_loss.item(), step, new_style=True)
+            writer.add_scalar("Loss", output.loss.item(), step, new_style=True)
             if step % args.log_interval == 0 and args.rank == 0:
                 logger.info(f"Epoch {epoch}, step {step}, loss {output.loss.item()}")
                 fig = output.plot

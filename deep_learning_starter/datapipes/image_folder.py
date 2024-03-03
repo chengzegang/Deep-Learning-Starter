@@ -12,12 +12,12 @@ from torch import Tensor
 
 class ImageFolder(MapDataPipe):
 
-    def __init__(self, data_dir: str, exts: Tuple[int, int] = (".jpg", ".png"), image_size: int = 256, transform=None):
+    def __init__(self, data_dir: str, exts: Tuple[int, int] = (".jpg", ".png"), image_size: int = 512, transform=None):
         self.data_dir = data_dir
         self.exts = exts
         self.image_size = image_size
         self.transform = transform
-        self.paths = None
+        self.paths = []
         for root, _, files in os.walk(data_dir):
             for file in files:
                 if file.lower().endswith(exts):
@@ -34,4 +34,4 @@ class ImageFolder(MapDataPipe):
         if self.transform is not None:
             image = self.transform(image)
         image = MemoryMappedTensor.from_tensor(image)
-        return image
+        return {"image": image}

@@ -4,8 +4,10 @@ import torch.nn.functional as F
 from torch import Tensor
 
 
-def plot_pair(pred: Tensor, target: Tensor, fig_size: int = 4):
+def plot_pair(pred: Tensor, target: Tensor, fig_size: int = 4, title=None):
     fig, ax = plt.subplots(1, 2, figsize=(fig_size * 2, fig_size))
+    if title is not None:
+        fig.suptitle(title)
     ax[0].imshow(TF.to_pil_image(pred.float().detach().cpu().clamp(0, 1)))
     ax[1].imshow(TF.to_pil_image(target.float().detach().cpu().clamp(0, 1)))
     ax[0].set_title("Prediction")

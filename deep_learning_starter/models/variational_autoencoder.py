@@ -81,7 +81,7 @@ class VariationalAutoEncoder(nn.Module):
     def decode(self, sample: Tensor) -> Tensor:
         return self.decoder(sample)
 
-    def forward(self, input: Tensor, target: Optional[Tensor] = None, kl_loss_weight: float = 0.1) -> VariationalAutoEncoderOutput:
+    def forward(self, input: Tensor, target: Optional[Tensor] = None, kl_loss_weight: float = 0.01) -> VariationalAutoEncoderOutput:
         latent_dist = self.encode(input)
         latent_sample = latent_dist.sample
         sample = self.decode(latent_sample)
