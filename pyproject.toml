@@ -39,6 +39,7 @@ dependencies = [
   'jupyter',
   'kornia',
   'lion_pytorch',
+  'open_clip',
 ]
 
 [project.urls]
