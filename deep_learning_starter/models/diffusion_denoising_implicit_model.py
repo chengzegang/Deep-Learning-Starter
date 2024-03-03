@@ -59,6 +59,7 @@ class LatentDiffusionTransformer(nn.Module):
             hidden_size=hidden_size, head_size=head_size, num_heads=num_heads, num_layers=num_layers, eps=eps, device=device, dtype=dtype
         )
         self.out_conv = nn.Conv2d(hidden_size, 12, kernel_size=3, stride=1, padding=1, bias=False, device=device, dtype=dtype)
+        self.latent_scale = 0.125
 
     def forward(self, image: Tensor, text: List[str], timestep: Tensor) -> Tensor:
         with torch.no_grad():
@@ -83,12 +84,13 @@ class LatentDiffusionText2Image(nn.Module):
         self.diffusion_model = LatentDiffusionTransformer(**kwargs)
         self.scheduler = DDIMScheduler(num_train_timesteps=num_train_timesteps)
         self.num_train_timesteps = num_train_timesteps
+        self.latent_scale = 0.125
 
     def forward(self, image: Tensor, text: List[str]) -> Tensor:
         with torch.no_grad():
             latent_states = self.autoencoder.encode(image)
             t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=image.device)
-            z = latent_states.sample
+            z = latent_states.sample * self.latent_scale
             eps_t = torch.randn_like(z)
             z_t = self.scheduler.add_noise(z, eps_t, t)
             z_t = self.scheduler.scale_model_input(z_t, t)
@@ -96,6 +98,6 @@ class LatentDiffusionText2Image(nn.Module):
         loss = F.mse_loss(eps_t_hat, eps_t)
         with torch.no_grad():
             self.scheduler.set_timesteps(self.num_train_timesteps)
-            z_hat = self.scheduler.step(eps_t_hat, t, z_t).pred_original_sample
+            z_hat = self.scheduler.step(eps_t_hat, t, z_t).pred_original_sample / self.latent_scale
             pred_original_sample = self.autoencoder.decode(z_hat)
         return LatentDiffusionText2ImageOutput(loss, t, image, pred_original_sample)
