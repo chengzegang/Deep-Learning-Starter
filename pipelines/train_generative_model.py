@@ -209,10 +209,9 @@ def train(args):
     dataset = None
     if args.data_loader == "datasets":
         dataset = (
-            ImageFolder("/mnt/d/coolipa/512_girls")
-            # load_dataset("imagenet-1k", split="train", cache_dir="data", streaming=True)
-            .shuffle().sharding_filter()
-            # .filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
+            load_dataset("imagenet-1k", split="train", cache_dir="data", streaming=True)
+            .shuffle()
+            .filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
         )
     elif args.data_loader == "webdataset":
         dataset = (
