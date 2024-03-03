@@ -52,6 +52,8 @@ class LatentDiffusionTransformer(nn.Module):
         self.clip, _, self.preprocess = open_clip.create_model_and_transforms(
             "hf-hub:laion/CLIP-ViT-B-32-laion2B-s34B-b79K", precision="fp16", device=device
         )
+        self.clip.eval()
+        self.clip.requires_grad_(False)
         self.tokenizer = open_clip.get_tokenizer("hf-hub:laion/CLIP-ViT-B-32-laion2B-s34B-b79K")
         self.timestep_embedding = nn.Embedding(1000, hidden_size, device=device, dtype=dtype, padding_idx=0)
         self.in_conv = nn.Conv2d(12, hidden_size, kernel_size=3, stride=1, padding=1, bias=False, device=device, dtype=dtype)
@@ -81,6 +83,8 @@ class LatentDiffusionText2Image(nn.Module):
     def __init__(self, autoencoder: nn.Module, num_train_timesteps: int = 1000, **kwargs):
         super().__init__()
         self.autoencoder = autoencoder
+        self.autoencoder.eval()
+        self.autoencoder.requires_grad_(False)
         self.diffusion_model = LatentDiffusionTransformer(**kwargs)
         self.scheduler = DDIMScheduler(num_train_timesteps=num_train_timesteps)
         self.num_train_timesteps = num_train_timesteps
@@ -101,3 +105,12 @@ class LatentDiffusionText2Image(nn.Module):
             z_hat = self.scheduler.step(eps_t_hat, t, z_t).pred_original_sample / self.latent_scale
             pred_original_sample = self.autoencoder.decode(z_hat)
         return LatentDiffusionText2ImageOutput(loss, t, image, pred_original_sample)
+
+    def generate(self, text: str) -> Tensor:
+        with torch.no_grad():
+            z = torch.randn(1, self.autoencoder.latent_channels, device=self.diffusion_model.device, dtype=self.diffusion_model.dtype)
+            z = z * self.latent_scale
+            z = self.scheduler.scale_model_input(z, 0)
+            z = self.scheduler.step(z, 0).pred_original_sample / self.latent_scale
+            pred_original_sample = self.autoencoder.decode(z)
+        return pred_original_sample

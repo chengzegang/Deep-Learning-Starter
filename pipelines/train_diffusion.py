@@ -1,5 +1,6 @@
 import argparse
 from functools import partial
+import random
 from typing import Type
 from deep_learning_starter.datapipes.image_folder import ImageFolder
 from deep_learning_starter.models import MaskedAutoEncoder
@@ -104,6 +105,7 @@ def init_model(args):
             logger.warning(f"Failed to load model from {model_path}. Starting from scratch. {short_e}")
     model.autoencoder.load_state_dict(torch.load("models/vae2d/model.pth", map_location=move_to_device, mmap=True), assign=True)
     model.autoencoder.requires_grad_(False)
+    model.diffusion_model.clip.requires_grad_(False)
     model.to(memory_format=torch.channels_last)
     return model
 
@@ -135,7 +137,9 @@ def load(data, image_size):
     data = data.convert("RGB")
     data = TF.pil_to_tensor(data)
     data = TF.resize(data, image_size, antialias=True)
-    data = TF.center_crop(data, (image_size, image_size))
+    top = random.randint(0, data.size(1) - image_size)
+    left = random.randint(0, data.size(2) - image_size)
+    data = TF.crop_image(data, top, left, image_size, image_size)
     data = TF.to_dtype(data, torch.float32, scale=True)
     return data
 
@@ -181,15 +185,15 @@ import io
 def download(data):
     try:
         resp = httpx.get(
-            data["image"],
+            data["url"],
             follow_redirects=True,
             timeout=1,
         )
         resp.raise_for_status()
-        data["image"] = Image.open(io.BytesIO(resp.content))
+        data["url"] = Image.open(io.BytesIO(resp.content))
         return data
     except Exception:
-        data["image"] = None
+        data["url"] = None
         return data
 
 
@@ -204,18 +208,27 @@ def train(args):
         state = PostLocalSGDState(process_group=None, subgroup=None, start_localSGD_iter=100)
         traced_model.register_comm_hook(state, post_localSGD_hook)
 
-    local_optimizer = AdamW(traced_model.parameters(), lr=args.lr, weight_decay=args.weight_decay, fused=True)
+    local_optimizer = AdamW(traced_model.diffusion_model.parameters(), lr=args.lr, weight_decay=args.weight_decay, fused=True)
     scheduler = cosine_warmup_scheduler(local_optimizer, args.warmup_steps, args.max_steps, args.min_lr / args.lr)
     if args.ddp:
         optimizer = PostLocalSGDOptimizer(local_optimizer, averager=averagers.PeriodicModelAverager(period=4, warmup_steps=100))
     else:
         optimizer = local_optimizer
 
+    # dataset = (
+    #    wds.WebDataset(glob.iglob(args.data_dir), nodesplitter=wds.shardlists.split_by_worker)
+    #    .decode("torchrgb")
+    #    .rename_keys(image="jpg", caption="txt")
+    #    .shuffle(1000)
+    # )
     dataset = (
-        wds.WebDataset(glob.iglob(args.data_dir), nodesplitter=wds.shardlists.split_by_worker)
-        .decode("torchrgb")
-        .rename_keys(image="jpg", caption="txt")
-        .shuffle(1000)
+        load_dataset("kakaobrain/coyo-700m", split="train", streaming=True)
+        .filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
+        .shuffle()
+        .map(download)
+        .filter(lambda x: x["url"] is not None)
+        .rename_column("url", "image")
+        .map(partial(transform, image_size=args.image_size))
     )
     total_images = 11990000
     dl = DataLoader(
@@ -239,7 +252,7 @@ def train(args):
         for batch in (pbar := tqdm(dl, total=total_samples, disable=not args.tqdm or not args.rank == 0, dynamic_ncols=True)):
             traced_model.train()
             image = batch["image"].to(device=args.device, dtype=args.dtype, non_blocking=True).contiguous(memory_format=torch.channels_last)
-            text = batch["caption"]
+            text = batch["text"]
             if args.ddp and step % args.grad_accum != 0:
                 with traced_model.no_sync():
                     with torch.autocast("cuda", args.train_dtype, enabled=args.train_dtype != torch.float32):
