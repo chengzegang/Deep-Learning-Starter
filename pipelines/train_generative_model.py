@@ -1,5 +1,6 @@
 import argparse
 from functools import partial
+import random
 from typing import Type
 from deep_learning_starter.datapipes.image_folder import ImageFolder
 from deep_learning_starter.models import MaskedAutoEncoder
@@ -33,6 +34,7 @@ import webdataset as wds
 from datasets import load_dataset, DownloadConfig
 from torch.utils.tensorboard import SummaryWriter
 from deep_learning_starter.models.vector_quantized_vae import VQVAE, VQVAE2d
+from torch.utils.data import datapipes as dp
 
 logger = logging.getLogger(__name__)
 
@@ -118,12 +120,16 @@ def cosine_warmup_scheduler(optimizer, warmup_steps, max_steps, min_lr, last_epo
 
 
 def transform(data, image_size):
-
-    data["image"] = data["image"].convert("RGB")
-    data["image"] = TF.pil_to_tensor(data["image"])
+    if isinstance(data["image"], Image.Image):
+        data["image"] = data["image"]
+        data["image"] = TF.pil_to_tensor(data["image"])
     data["image"] = TF.resize(data["image"], image_size, antialias=True)
-    data["image"] = TF.center_crop(data["image"], (image_size, image_size))
+    h, w = data["image"].shape[-2:]
+    left = random.randint(0, w - image_size)
+    top = random.randint(0, h - image_size)
+    data["image"] = TF.crop(data["image"], top, left, image_size, image_size)
     data["image"] = TF.to_dtype(data["image"], torch.float32, scale=True)
+    data = {"image": data["image"], "caption": data["caption"]}
     return data
 
 
@@ -190,6 +196,12 @@ def download(data):
         return data
 
 
+def collate_fn(batch):
+    image = torch.stack([item["image"] for item in batch])
+    caption = [item["caption"] for item in batch]
+    return {"image": image, "caption": caption}
+
+
 def train(args):
     model = init_model(args)
     traced_model = model
@@ -216,11 +228,12 @@ def train(args):
     elif args.data_loader == "webdataset":
         dataset = (
             wds.WebDataset(glob.iglob(args.data_dir), nodesplitter=wds.shardlists.split_by_worker)
-            .decode("torchrgb")
-            .rename_keys(image="jpg", caption="txt")
+            .compose(
+                wds.decode("torchrgb"), wds.rename_keys(image="png", caption="txt"), wds.map(partial(transform, image_size=args.image_size))
+            )
             .shuffle(1000)
-            # .map(partial(transform, image_size=args.image_size))
         )
+
     total_images = 11990000
     dl = DataLoader(
         dataset,
@@ -230,13 +243,14 @@ def train(args):
         pin_memory=True if not args.ddp else False,
         pin_memory_device=str(args.device) if not args.ddp else "",
         persistent_workers=True,
+        collate_fn=collate_fn,
     )
     step = 0
     model_path = os.path.join(args.model_dir, args.model.lower())
     os.makedirs(model_path, exist_ok=True)
 
     total_samples = total_images // args.world_size // args.batch_size
-    avg_model = swa_utils.AveragedModel(traced_model, device=args.device, avg_fn=swa_utils.get_ema_avg_fn(0.999), use_buffers=True)
+    avg_model = swa_utils.AveragedModel(traced_model, device=args.device, avg_fn=swa_utils.get_ema_avg_fn(0.99), use_buffers=True)
     writer = SummaryWriter(os.path.join(model_path, "logs"))
     for epoch in range(args.epochs):
 

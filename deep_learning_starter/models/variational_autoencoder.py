@@ -7,8 +7,9 @@ __all__ = [
     "VAE2d",
     "VAE3d",
 ]
+import itertools
 import math
-from typing import Optional
+from typing import Iterator, Optional
 from deep_learning_starter.modules import UnetEncoder2d, UnetDecoder2d, UnetEncoder3d, UnetDecoder3d
 import torch
 from torch import nn, Tensor
@@ -19,6 +20,7 @@ from . import _utils
 from kornia.color import rgb_to_lab
 from dataclasses import dataclass
 import torchvision.transforms.v2.functional as TF
+from torch.nn import Parameter
 
 
 @dataclass
@@ -74,6 +76,9 @@ class VariationalAutoEncoder(nn.Module):
     decoder: nn.Module
     _feature_extractor: nn.Module
 
+    def parameters(self, recurse: bool = True) -> Iterator[Parameter]:
+        return itertools.chain(self.encoder.parameters(recurse), self.decoder.parameters(recurse))
+
     def encode(self, input: Tensor) -> DiagonalGaussianDistribution:
         latent_states = self.encoder(input)
         return DiagonalGaussianDistribution(latent_states)
@@ -81,17 +86,21 @@ class VariationalAutoEncoder(nn.Module):
     def decode(self, sample: Tensor) -> Tensor:
         return self.decoder(sample)
 
-    def forward(self, input: Tensor, target: Optional[Tensor] = None, kl_loss_weight: float = 0.01) -> VariationalAutoEncoderOutput:
+    def forward(
+        self, input: Tensor, target: Optional[Tensor] = None, kl_loss_weight: float = 0.01, perception_weight=0.01
+    ) -> VariationalAutoEncoderOutput:
         latent_dist = self.encode(input)
         latent_sample = latent_dist.sample
         sample = self.decode(latent_sample)
         rec_loss = F.l1_loss(sample, input)
-        nsample = TF.normalize(sample, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ninput = TF.normalize(input, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        nsample = TF.resize(sample, size=(224, 224), antialias=True)
+        ninput = TF.resize(input, size=(224, 224), antialias=True)
+        nsample = TF.normalize(nsample, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ninput = TF.normalize(ninput, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         sample_feats = self._feature_extractor(nsample, output_hidden_states=True).hidden_states
         input_feats = self._feature_extractor(ninput, output_hidden_states=True).hidden_states
         for sf, inf in zip(sample_feats, input_feats):
-            rec_loss += F.mse_loss(sf, inf)
+            rec_loss += perception_weight * F.mse_loss(sf, inf)
         kl_loss = latent_dist.kl_loss
         loss = rec_loss + kl_loss_weight * kl_loss
         return VariationalAutoEncoderOutput(sample, input, latent_dist, rec_loss, kl_loss, loss)
@@ -139,9 +148,9 @@ class VariationalAutoEncoder2d(VariationalAutoEncoder):
             normalization=SpatialRMSNorm,
         )
 
-        from transformers import ResNetBackbone
+        from transformers import AutoModel
 
-        self._feature_extractor = ResNetBackbone.from_pretrained("microsoft/resnet-50", torch_dtype=dtype, device_map=device)
+        self._feature_extractor = AutoModel.from_pretrained("google/vit-base-patch16-224", torch_dtype=dtype, device_map=device)
         self._feature_extractor.requires_grad_(False)
 
 

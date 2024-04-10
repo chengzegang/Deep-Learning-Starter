@@ -34,7 +34,9 @@ import webdataset as wds
 from datasets import load_dataset, DownloadConfig
 from torch.utils.tensorboard import SummaryWriter
 from deep_learning_starter.models.vector_quantized_vae import VQVAE, VQVAE2d
+from PIL import ImageFile
 
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 logger = logging.getLogger(__name__)
 
 
@@ -105,7 +107,6 @@ def init_model(args):
             logger.warning(f"Failed to load model from {model_path}. Starting from scratch. {short_e}")
     model.autoencoder.load_state_dict(torch.load("models/vae2d/model.pth", map_location=move_to_device, mmap=True), assign=True)
     model.autoencoder.requires_grad_(False)
-    model.diffusion_model.clip.requires_grad_(False)
     model.to(memory_format=torch.channels_last)
     return model
 
@@ -215,21 +216,21 @@ def train(args):
     else:
         optimizer = local_optimizer
 
-    # dataset = (
-    #    wds.WebDataset(glob.iglob(args.data_dir), nodesplitter=wds.shardlists.split_by_worker)
-    #    .decode("torchrgb")
-    #    .rename_keys(image="jpg", caption="txt")
-    #    .shuffle(1000)
-    # )
     dataset = (
-        load_dataset("kakaobrain/coyo-700m", split="train", streaming=True)
-        .filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
-        .shuffle()
-        .map(download)
-        .filter(lambda x: x["url"] is not None)
-        .rename_column("url", "image")
-        .map(partial(transform, image_size=args.image_size))
+        wds.WebDataset(glob.iglob(args.data_dir), nodesplitter=wds.shardlists.split_by_worker)
+        .decode("torchrgb")
+        .rename_keys(image="jpg", text="txt")
+        .shuffle(1000)
     )
+    # dataset = (
+    #    load_dataset("kakaobrain/coyo-700m", split="train", streaming=True)
+    #    .filter(partial(sharding_filter, args.world_size, args.rank), with_indices=True)
+    #    .shuffle()
+    #    .map(download)
+    #    .filter(lambda x: x["url"] is not None)
+    #    .rename_column("url", "image")
+    #    .map(partial(transform, image_size=args.image_size))
+    # )
     total_images = 11990000
     dl = DataLoader(
         dataset,
